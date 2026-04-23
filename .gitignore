@@ -1,0 +1,7 @@
+node_modules/
+dist/
+reviews/
+watcher/state.json
+TASK_DONE.md
+.env
+*.tmp.*
