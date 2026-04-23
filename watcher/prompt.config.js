@@ -1,20 +1,24 @@
 /**
  * prompt.config.js — 프로젝트별 커스터마이징 지점
  *
- * 이 파일만 수정하면 됩니다. watch.js는 건드리지 마세요.
- *
- * 수정 방법:
- *   1. CODEX_GOALS  → Codex(구현 담당)에게 줄 목표를 작성합니다
- *   2. CLAUDE_GOALS → Claude(리뷰 담당)에게 줄 목표를 작성합니다
- *   3. 나머지 공통 규칙은 그대로 두거나 프로젝트에 맞게 조정합니다
- *
- * 실제 작성 예시는 examples/ 폴더를 참고하세요.
+ * CODEX_GOALS / CLAUDE_GOALS를 직접 수정하거나,
+ * /api/confirm을 통해 task-goals.json이 생성된 경우 그 값을 우선 사용합니다.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-// npm run kick으로 전달된 작업 내용을 읽어 프롬프트에 포함합니다.
+const GOALS_PATH = path.join(__dirname, 'task-goals.json');
+
+function readGeneratedGoals() {
+  if (!fs.existsSync(GOALS_PATH)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(GOALS_PATH, 'utf8'));
+    if (parsed.codexGoals && parsed.claudeGoals) return parsed;
+  } catch {}
+  return null;
+}
+
 function readTask() {
   const taskPath = path.join(__dirname, 'task.txt');
   if (fs.existsSync(taskPath)) {
@@ -25,52 +29,67 @@ function readTask() {
 }
 
 // -----------------------------------------------
-// Codex 목표 (구현 담당)
-// 무엇을 어떻게 만들지 구체적으로 적어주세요.
+// 기본 목표 — task-goals.json이 없을 때 사용
 // -----------------------------------------------
-const CODEX_GOALS = `
-1. src/ 안의 코드를 읽고 현재 상태를 파악한다.
-2. 누락된 기능이나 구조를 구현한다.
-3. 하나의 작업 단위를 완결성 있게 작성한다 (절반만 구현 금지).
-4. 구현 후 변경 내용을 간결하게 요약한다.
+const DEFAULT_CODEX_GOALS = `
+기존 duo-agent 대시보드(src/main.js, vite.config.js)의 채팅 패널을 구조화된 kick 폼으로 교체한다.
+
+기술 스택: Vite + Vanilla JS (TypeScript 사용 금지, 외부 라이브러리 추가 금지)
+
+1. vite.config.js에서 /api/chat, /api/confirm 엔드포인트를 제거한다. /api/kick, /api/stop, /api/state, /api/reviews는 그대로 유지한다.
+
+2. src/main.js에서 채팅 관련 코드(currentMessages, chatDraft, sendChat, confirmChat, renderChatPanel 등)를 모두 제거하고, 아래 구조화된 폼 패널로 교체한다:
+
+   패널 이름: "New Task"
+
+   폼 필드 3개:
+   - goal (필수): textarea, label "목표", placeholder "무엇을 만들거나 수정할지 구체적으로 적어주세요."
+   - stack (선택): input[text], label "기술 스택", placeholder "예: React, Node.js, PostgreSQL"
+   - rules (선택): textarea, label "제약 조건", placeholder "예: 테스트 필수, REST API, 기존 코드 유지"
+
+   [▶ Kick] 버튼:
+   - goal가 비어 있으면 비활성화
+   - 클릭 시 세 필드를 아래 형식으로 조합해 POST /api/kick의 task로 전송:
+     "goal: {goal}\\nstack: {stack}\\nrules: {rules}"
+     (stack, rules가 비어 있으면 해당 줄 생략)
+   - 전송 후 폼 초기화
+
+   [■ Stop] 버튼: status가 'running'일 때만 활성화
+
+   status가 'running'이면 폼 전체 비활성화
+
+3. 스타일은 기존 다크 테마와 일관성 유지
+`;
+
+const DEFAULT_CLAUDE_GOALS = `
+Codex가 구현한 구조화된 kick 폼을 검토하고 수정한다.
+
+검토 항목:
+1. vite.config.js에서 /api/chat, /api/confirm이 완전히 제거됐는지 확인한다.
+2. src/main.js에서 채팅 관련 코드(currentMessages, chatDraft, sendChat, confirmChat 등)가 모두 제거됐는지 확인한다.
+3. goal/stack/rules 필드가 올바르게 조합돼 POST /api/kick에 전달되는지 확인한다.
+4. goal 비어 있을 때 Kick 버튼 비활성화, running 상태일 때 폼 비활성화가 올바른지 확인한다.
+5. 기존 대시보드 기능(폴링, 진행 바, 메트릭, 리뷰 목록)이 그대로 동작하는지 확인한다.
+6. 문제가 있으면 직접 수정하고 npm run build로 빌드 성공을 검증한다.
+7. 수정 내용을 간결하게 요약한다.
 `;
 
 // -----------------------------------------------
-// Claude 목표 (리뷰 담당)
-// 무엇을 기준으로 검토하고 수정할지 적어주세요.
-// -----------------------------------------------
-const CLAUDE_GOALS = `
-1. src/ 안의 코드를 읽고 전체 구조를 파악한다.
-2. 버그, 문법 오류, 누락된 구현, 보안 문제를 찾는다.
-3. 문제가 있으면 직접 수정한다.
-4. 수정 후 가능하면 npm run build 또는 npm test로 검증한다.
-5. 수정 내용을 간결하게 요약한다.
-`;
-
-// -----------------------------------------------
-// 공통 중단 규칙 — 일반적으로 수정 불필요
+// 공통 중단 규칙
 // -----------------------------------------------
 const STOP_RULES = `
 중요한 중단 규칙:
-- 목표가 완료되어 사용자가 확인할 단계라면 마지막 줄에 "STATUS: COMPLETE"를 출력한다.
-- 상대 에이전트가 이어서 작업해야 한다면 마지막 줄에 "STATUS: NEEDS_NEXT"를 출력한다.
+- Codex는 절대 "STATUS: COMPLETE"를 출력하지 않는다. 구현이 끝나면 반드시 "STATUS: NEEDS_NEXT"를 출력한다.
+- Claude Code만 "STATUS: COMPLETE"를 출력할 수 있다. 리뷰 후 수정할 것이 없으면 COMPLETE로 마무리한다.
 - 같은 변경을 반복하지 말고, 충분한 상태라면 COMPLETE로 멈춘다.
 - reviews/, watcher/, node_modules/는 수정하지 않는다.
 `;
 
-/**
- * @param {object} ctx
- * @param {'claude' | 'codex'} ctx.agentName
- * @param {string} ctx.agentLabel
- * @param {string} ctx.peerLabel
- * @param {string} ctx.rootDir
- * @param {string} ctx.reason
- * @param {number} ctx.round
- * @param {number} ctx.maxRounds
- * @returns {string}
- */
 function buildPrompt({ agentName, agentLabel, peerLabel, rootDir, reason, round, maxRounds }) {
-  const goals = agentName === 'codex' ? CODEX_GOALS : CLAUDE_GOALS;
+  const generated = readGeneratedGoals();
+  const goals = agentName === 'codex'
+    ? (generated?.codexGoals ?? DEFAULT_CODEX_GOALS)
+    : (generated?.claudeGoals ?? DEFAULT_CLAUDE_GOALS);
   const task = readTask();
 
   return [

@@ -3,13 +3,44 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI Fight</title>
+    <title>Duo Agent Dashboard</title>
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+      :root {
+        color-scheme: dark;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        background: #05070a;
+        color: #d6f5e3;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        background:
+          linear-gradient(rgba(34, 197, 94, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(34, 197, 94, 0.03) 1px, transparent 1px),
+          #05070a;
+        background-size: 24px 24px;
+      }
+
+      button,
+      summary {
+        font: inherit;
+      }
+
+      #app {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0;
+      }
     </style>
   </head>
   <body>
+    <main id="app"></main>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

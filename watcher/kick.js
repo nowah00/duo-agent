@@ -18,8 +18,7 @@ const PATHS = {
   task:    path.join(__dirname, 'task.txt'),
   state:   path.join(__dirname, 'state.json'),
   done:    path.join(ROOT_DIR, 'TASK_DONE.md'),
-  trigger: path.join(ROOT_DIR, 'src', 'duo-agent.kick.js'),
-  src:     path.join(ROOT_DIR, 'src'),
+  trigger: path.join(__dirname, '.kick-trigger'),
 };
 
 function log(msg) {
@@ -59,12 +58,7 @@ log('상태 초기화');
 fs.writeFileSync(PATHS.task, task, 'utf8');
 log(`작업 저장: "${task}"`);
 
-// 4. 트리거 파일 생성 → watch.js가 감지해 첫 에이전트 실행
-fs.mkdirSync(PATHS.src, { recursive: true });
-fs.writeFileSync(
-  PATHS.trigger,
-  `// duo-agent kick trigger — 이 파일은 자동 생성됩니다. 수정하지 마세요.\n// task: ${task}\n// at: ${new Date().toISOString()}\n`,
-  'utf8',
-);
+// 4. 트리거 파일 생성 → watch.js가 감지해 첫 에이전트 실행 (watcher/ 안에 생성, src/ 오염 없음)
+fs.writeFileSync(PATHS.trigger, new Date().toISOString(), 'utf8');
 log('watcher 트리거 전송');
 log('잠시 후 에이전트가 시작됩니다...');

@@ -9,7 +9,9 @@
     "kick": "node watcher/kick.js",
     "start": "concurrently \"npm run dev\" \"npm run watch\""
   },
-  "dependencies": {},
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.66.0"
+  },
   "devDependencies": {
     "chokidar": "^3.6.0",
     "concurrently": "^8.2.0",
