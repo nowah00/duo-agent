@@ -113,9 +113,45 @@ rm TASK_DONE.md   # 완료 파일 삭제
 |------|----------|
 | `CLAUDE.md` | Claude에게 무엇을 리뷰할지 알려주는 지침 |
 | `AGENTS.md` | Codex에게 어떻게 개발할지 알려주는 지침 |
-| `watcher/prompt.config.js` | 두 AI에게 공통으로 전달할 목표 설명 |
+| `watcher/prompt.config.js` | 두 AI에게 전달할 목표 (Codex용/Claude용 분리 작성) |
 
 `watcher/watch.js`는 수정하지 않아도 됩니다.
+
+---
+
+## prompt.config.js 작성 방법
+
+`watcher/prompt.config.js` 안에는 두 개의 목표 블록이 있습니다.
+
+```js
+// Codex(구현 담당)에게 줄 목표
+const CODEX_GOALS = `
+1. 누락된 기능을 구현한다.
+2. ...
+`;
+
+// Claude(리뷰 담당)에게 줄 목표
+const CLAUDE_GOALS = `
+1. 버그와 오류를 찾아 수정한다.
+2. ...
+`;
+```
+
+두 블록만 프로젝트에 맞게 바꾸면 됩니다. 나머지는 건드리지 않아도 됩니다.
+
+### 예시 파일 참고
+
+`examples/` 폴더에 실제 프로젝트 기준으로 작성된 예시가 있습니다.
+
+| 예시 | 경로 |
+|------|------|
+| Phaser.js 2D 게임 | `examples/phaser-game/prompt.config.js` |
+
+예시를 복사해서 `watcher/prompt.config.js`에 붙여넣은 뒤 내용만 수정하면 됩니다.
+
+```bash
+cp examples/phaser-game/prompt.config.js watcher/prompt.config.js
+```
 
 ---
 
