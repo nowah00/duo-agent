@@ -5,3 +5,5 @@ watcher/state.json
 TASK_DONE.md
 .env
 *.tmp.*
+watcher/task.txt
+src/duo-agent.kick.js

@@ -11,6 +11,19 @@
  * 실제 작성 예시는 examples/ 폴더를 참고하세요.
  */
 
+const fs = require('fs');
+const path = require('path');
+
+// npm run kick으로 전달된 작업 내용을 읽어 프롬프트에 포함합니다.
+function readTask() {
+  const taskPath = path.join(__dirname, 'task.txt');
+  if (fs.existsSync(taskPath)) {
+    const task = fs.readFileSync(taskPath, 'utf8').trim();
+    if (task) return `현재 작업 지시: "${task}"`;
+  }
+  return null;
+}
+
 // -----------------------------------------------
 // Codex 목표 (구현 담당)
 // 무엇을 어떻게 만들지 구체적으로 적어주세요.
@@ -58,6 +71,7 @@ const STOP_RULES = `
  */
 function buildPrompt({ agentName, agentLabel, peerLabel, rootDir, reason, round, maxRounds }) {
   const goals = agentName === 'codex' ? CODEX_GOALS : CLAUDE_GOALS;
+  const task = readTask();
 
   return [
     '너는 이 프로젝트를 공동 개발하는 자동 에이전트다.',
@@ -66,12 +80,14 @@ function buildPrompt({ agentName, agentLabel, peerLabel, rootDir, reason, round,
     `작업 루트: ${rootDir}`,
     `트리거: ${reason}`,
     `라운드: ${round}/${maxRounds}`,
+    task ? '' : null,
+    task ?? null,
     '',
     '목표:',
     goals.trim(),
     '',
     STOP_RULES.trim(),
-  ].join('\n');
+  ].filter(line => line !== null).join('\n');
 }
 
 module.exports = { buildPrompt };

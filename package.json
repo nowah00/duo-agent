@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "watch": "node watcher/watch.js",
+    "kick": "node watcher/kick.js",
     "start": "concurrently \"npm run dev\" \"npm run watch\""
   },
   "dependencies": {},
