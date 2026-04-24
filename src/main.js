@@ -483,15 +483,23 @@ function renderLastRound(container, state) {
 function render() {
   const fragment = document.createDocumentFragment();
   const shell = createElement('div', { className: 'dashboard-shell' });
+  const columns = createElement('div', { className: 'dashboard-columns' });
+  const leftCol = createElement('div', { className: 'dashboard-col' });
+  const rightCol = createElement('div', { className: 'dashboard-col' });
 
   renderHeader(shell, currentState);
-  renderKickPanel(shell, currentState);
-  renderFeedbackPanel(shell, currentState);
-  renderChecklist(shell, currentState);
-  renderLastRound(shell, currentState);
-  renderProgress(shell, currentState);
-  renderMetrics(shell, currentState);
-  renderReviews(shell, currentReviews);
+
+  renderKickPanel(leftCol, currentState);
+  renderFeedbackPanel(leftCol, currentState);
+  renderChecklist(leftCol, currentState);
+
+  renderProgress(rightCol, currentState);
+  renderMetrics(rightCol, currentState);
+  renderLastRound(rightCol, currentState);
+  renderReviews(rightCol, currentReviews);
+
+  columns.append(leftCol, rightCol);
+  shell.append(columns);
   renderError(shell);
 
   fragment.append(shell);
@@ -654,9 +662,23 @@ function injectStyles() {
       color: var(--text-base);
     }
 
+    .dashboard-columns {
+      display: grid;
+      grid-template-columns: 380px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .dashboard-col {
+      display: grid;
+      gap: 18px;
+    }
+
     .dashboard-header,
     .kick-panel,
     .progress-panel,
+    .feedback-panel,
+    .last-round-panel,
     .metric,
     .reviews-panel {
       border: 1px solid var(--border-soft);
@@ -1018,28 +1040,27 @@ function injectStyles() {
 
     .feedback-panel,
     .last-round-panel {
-      border: 1px solid #203629;
-      background: rgba(5, 10, 8, 0.92);
       padding: 18px;
       display: grid;
       gap: 12px;
     }
 
     .feedback-pending-badge {
-      color: #fbbf24;
+      color: #b45309;
+      font-weight: 700;
     }
 
     .control-button--feedback {
-      color: #38bdf8;
-      background: rgba(56, 189, 248, 0.08);
-      border-color: #38bdf8;
+      color: var(--accent-strong);
+      background: rgba(196, 168, 130, 0.18);
+      border-color: var(--accent-strong);
       min-width: 80px;
       align-self: start;
     }
 
     .last-round-summary {
       margin: 0;
-      color: #c6f6d5;
+      color: var(--text-base);
       line-height: 1.6;
     }
 
@@ -1051,7 +1072,7 @@ function injectStyles() {
     }
 
     .changed-file {
-      color: #7dd3a7;
+      color: var(--accent);
       font-size: 0.85rem;
       line-height: 1.5;
       overflow-wrap: anywhere;
@@ -1087,10 +1108,14 @@ function injectStyles() {
       font-weight: 700;
     }
 
-    @media (max-width: 760px) {
+    @media (max-width: 860px) {
       #app {
         width: min(100% - 20px, 1120px);
         padding: 18px 0;
+      }
+
+      .dashboard-columns {
+        grid-template-columns: 1fr;
       }
 
       .dashboard-header {
