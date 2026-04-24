@@ -256,6 +256,19 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (UI 개편 — 상태 설명 한국화, 오류 번역, 히스토리 세션 배지)
+
+**사용자 경험 개선** (`src/main.js`)
+- `getUserFacingErrorMessage()`: raw 서버/CLI 오류 문자열을 한국어 안내 문구로 번역 — spawn 실패, 권한 오류, exit 코드 등 대응
+- `mapStatus()` Stop 안내 수정: "즉시 강제 종료"가 아니라 "현재 라운드를 마무리한 뒤 자동 진행을 멈춘다"고 명시
+- `summarizeHistorySession()`: 히스토리 페이지 세션마다 상태 배지(완료/후속 필요/검토 기록 등) + 한 줄 요약 표시
+- `inline-badge` CSS 추가 (complete/running/paused/error 4종)
+
+**버그 수정** (`src/main.js`)
+- `parseReviewMeta()`: JSON 형식 상태 출력(`{"status":"COMPLETE"}`) 감지 누락 수정 — 기존 `STATUS: COMPLETE` 텍스트 패턴만 체크하던 것을 JSON 형식도 함께 인식하도록 보완
+
+---
+
 ### 2026-04-24 (기능 추가 — 프롬프트·결과 내역 매칭)
 
 **프롬프트 요약 저장 및 Output/Prompt 탭** (`watcher/watch.js`, `vite.config.js`, `src/main.js`)
