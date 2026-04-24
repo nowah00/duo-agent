@@ -15,10 +15,11 @@ const path = require('path');
 const ROOT_DIR = path.resolve(__dirname, '..');
 
 const PATHS = {
-  task:    path.join(__dirname, 'task.txt'),
-  state:   path.join(__dirname, 'state.json'),
-  done:    path.join(ROOT_DIR, 'TASK_DONE.md'),
-  trigger: path.join(__dirname, '.kick-trigger'),
+  task:      path.join(__dirname, 'task.txt'),
+  state:     path.join(__dirname, 'state.json'),
+  checklist: path.join(__dirname, 'checklist.json'),
+  done:      path.join(ROOT_DIR, 'TASK_DONE.md'),
+  trigger:   path.join(__dirname, '.kick-trigger'),
 };
 
 function log(msg) {
@@ -54,8 +55,9 @@ fs.writeFileSync(
 );
 log('상태 초기화');
 
-// 3. 작업 내용 저장 (prompt.config.js가 읽어 프롬프트에 포함)
+// 3. 작업 내용 저장 및 체크리스트 초기화 (CLI 사용 시 체크리스트 없음)
 fs.writeFileSync(PATHS.task, task, 'utf8');
+fs.writeFileSync(PATHS.checklist, JSON.stringify({ items: [] }, null, 2));
 log(`작업 저장: "${task}"`);
 
 // 4. 트리거 파일 생성 → watch.js가 감지해 첫 에이전트 실행 (watcher/ 안에 생성, src/ 오염 없음)

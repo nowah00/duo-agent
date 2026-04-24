@@ -256,6 +256,31 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (버그 수정 및 기능 추가)
+
+**무한 로딩 버그 수정** (`watcher/watch.js`)
+- 에이전트 프롬프트를 CLI 인자 대신 stdin으로 전달 — Windows에서 한국어 포함 프롬프트가 공백 기준으로 분리되어 발생하던 `unexpected argument '이' found` 오류 해결
+- pre-flight spawn에 `shell: process.platform === 'win32'` 추가 — Windows에서 `.cmd` 스크립트 실행 불가 문제 해결
+- pre-flight에 `--permission-mode acceptEdits` 추가 — 권한 프롬프트 대기로 인한 무한 로딩 방지
+
+**에이전트 안정성 개선** (`watcher/watch.js`, `.env.example`)
+- 에이전트 실행 타임아웃 추가 (`AGENT_TIMEOUT_MS`, 기본 10분) — 응답 없는 프로세스 자동 강제 종료
+- 에이전트 실행 오류 핸들러 추가 (`child.on('error', ...)`) — spawn 실패 시 상태 `error`로 기록
+- `writeState` 원자적 쓰기 (임시 파일 생성 후 교체) — 파일 손상 방지
+- STATUS 검사 범위를 출력 마지막 20줄로 제한 (`lastLines()`) — 긴 출력 중간에 STATUS가 포함되던 오작동 방지
+
+**완료 체크리스트 기능** (`src/main.js`, `vite.config.js`, `watcher/kick.js`, `watcher/prompt.config.js`)
+- kick 폼에 완료 체크리스트 입력 필드 추가 (항목 추가/삭제 가능)
+- `/api/kick`에서 체크리스트 수신 및 `checklist.json` 저장
+- `/api/state`에서 체크리스트 반환, 대시보드에 패널로 표시
+- 에이전트 프롬프트에 체크리스트 포함 — 모든 항목 완료 시에만 `STATUS: COMPLETE` 허용
+- `watcher/checklist.json` gitignore 추가
+
+**프로젝트 이름 통일** (`package.json`, `package-lock.json`, `index.html`)
+- 모든 타이틀·프로그램명을 `duo-agent`로 통일 (`ai-collab-template` 제거)
+
+---
+
 ### 2026-04-23 ~ 2026-04-24
 
 **모니터링 대시보드 구현** (duo-agent 자체 제작)

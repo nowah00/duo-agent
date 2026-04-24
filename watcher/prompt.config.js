@@ -28,6 +28,18 @@ function readTask() {
   return null;
 }
 
+function readChecklist() {
+  const checklistPath = path.join(__dirname, 'checklist.json');
+  if (!fs.existsSync(checklistPath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(checklistPath, 'utf8'));
+    const items = Array.isArray(data.items) ? data.items.filter(s => s.trim()) : [];
+    return items.length ? items : null;
+  } catch {
+    return null;
+  }
+}
+
 // -----------------------------------------------
 // 기본 목표 — task-goals.json이 없을 때 사용
 // -----------------------------------------------
@@ -91,6 +103,15 @@ function buildPrompt({ agentName, agentLabel, peerLabel, rootDir, reason, round,
     ? (generated?.codexGoals ?? DEFAULT_CODEX_GOALS)
     : (generated?.claudeGoals ?? DEFAULT_CLAUDE_GOALS);
   const task = readTask();
+  const checklist = readChecklist();
+
+  const checklistBlock = checklist
+    ? [
+        '',
+        '완료 체크리스트 (모든 항목이 완료됐을 때만 STATUS: COMPLETE를 출력한다):',
+        ...checklist.map((item, i) => `${i + 1}. ${item}`),
+      ].join('\n')
+    : null;
 
   return [
     '너는 이 프로젝트를 공동 개발하는 자동 에이전트다.',
@@ -101,6 +122,7 @@ function buildPrompt({ agentName, agentLabel, peerLabel, rootDir, reason, round,
     `라운드: ${round}/${maxRounds}`,
     task ? '' : null,
     task ?? null,
+    checklistBlock,
     '',
     '목표:',
     goals.trim(),

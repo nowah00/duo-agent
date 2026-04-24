@@ -31,6 +31,7 @@ let kickForm = {
   goal: '',
   stack: '',
   rules: '',
+  checklist: [],
 };
 
 function clamp(value, min, max) {
@@ -211,11 +212,48 @@ function renderKickPanel(container, state) {
   });
 
   actions.append(kickButton, stopButton);
+
+  const checklistField = createElement('div', { className: 'form-field' });
+  const checklistLabel = createElement('span', { className: 'form-field__label', text: '완료 체크리스트 (선택)' });
+  const checklistItems = createElement('div', { className: 'checklist-inputs' });
+
+  kickForm.checklist.forEach((item, index) => {
+    const row = createElement('div', { className: 'checklist-row' });
+    const input = createElement('input', { className: 'form-input' });
+    const removeBtn = createElement('button', { className: 'checklist-remove-btn', text: '×' });
+
+    input.type = 'text';
+    input.value = item;
+    input.placeholder = `항목 ${index + 1}`;
+    input.disabled = isFormDisabled;
+    input.addEventListener('input', (e) => { kickForm.checklist[index] = e.target.value; });
+
+    removeBtn.type = 'button';
+    removeBtn.disabled = isFormDisabled;
+    removeBtn.addEventListener('click', () => {
+      kickForm.checklist.splice(index, 1);
+      render();
+    });
+
+    row.append(input, removeBtn);
+    checklistItems.append(row);
+  });
+
+  const addItemBtn = createElement('button', { className: 'checklist-add-btn', text: '+ 항목 추가' });
+  addItemBtn.type = 'button';
+  addItemBtn.disabled = isFormDisabled;
+  addItemBtn.addEventListener('click', () => {
+    kickForm.checklist.push('');
+    render();
+  });
+
+  checklistField.append(checklistLabel, checklistItems, addItemBtn);
+
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     kickAgent();
   });
-  form.append(goalField, stackField, rulesField, actions);
+  form.append(goalField, stackField, rulesField, checklistField, actions);
   panel.append(header, form);
 
   if (controlError) {
@@ -277,6 +315,26 @@ function renderReviews(container, reviews) {
   container.append(section);
 }
 
+function renderChecklist(container, state) {
+  const items = Array.isArray(state.checklist) ? state.checklist : [];
+  if (!items.length) return;
+
+  const section = createElement('section', { className: 'checklist-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  header.append(
+    createElement('h2', { text: '완료 체크리스트' }),
+    createElement('span', { text: `${items.length}개 항목` }),
+  );
+
+  const list = createElement('ol', { className: 'checklist-list' });
+  items.forEach((item) => {
+    list.append(createElement('li', { className: 'checklist-list-item', text: item }));
+  });
+
+  section.append(header, list);
+  container.append(section);
+}
+
 function renderError(container) {
   if (!loadError) return;
 
@@ -292,6 +350,7 @@ function render() {
 
   renderHeader(shell, currentState);
   renderKickPanel(shell, currentState);
+  renderChecklist(shell, currentState);
   renderProgress(shell, currentState);
   renderMetrics(shell, currentState);
   renderReviews(shell, currentReviews);
@@ -347,11 +406,15 @@ async function kickAgent() {
   render();
 
   try {
-    await postJson('/api/kick', { task });
+    await postJson('/api/kick', {
+      task,
+      checklist: kickForm.checklist.filter(s => s.trim()),
+    });
     kickForm = {
       goal: '',
       stack: '',
       rules: '',
+      checklist: [],
     };
     await refreshDashboard();
   } catch (error) {
@@ -407,9 +470,29 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = 'duo-agent-dashboard-styles';
   style.textContent = `
+    :root {
+      --bg-canvas: #faf8f5;
+      --bg-wash: #f5f0e8;
+      --panel-bg: #fdf9f4;
+      --panel-bg-alt: #f8f3ec;
+      --border-soft: #ddcfbe;
+      --border-strong: #cbb69b;
+      --accent: #836942;
+      --accent-strong: #7a5f38;
+      --accent-soft: #c4a882;
+      --text-strong: #3d2b1f;
+      --text-base: #5c4033;
+      --text-muted: #8d7868;
+      --error: #8c5a4b;
+      --input-bg: #fffdfa;
+      --track-bg: #efe6da;
+      --pre-bg: #f7f0e6;
+    }
+
     .dashboard-shell {
       display: grid;
       gap: 18px;
+      color: var(--text-base);
     }
 
     .dashboard-header,
@@ -417,9 +500,9 @@ function injectStyles() {
     .progress-panel,
     .metric,
     .reviews-panel {
-      border: 1px solid #203629;
-      background: rgba(5, 10, 8, 0.92);
-      box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.05), 0 18px 60px rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border-soft);
+      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
+      box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
     }
 
     .dashboard-header {
@@ -439,7 +522,7 @@ function injectStyles() {
     .section-header span,
     .review-hint,
     .form-field__label {
-      color: #7dd3a7;
+      color: var(--accent);
       font-size: 0.78rem;
       text-transform: uppercase;
       letter-spacing: 0;
@@ -448,7 +531,7 @@ function injectStyles() {
     h1,
     h2 {
       margin: 0;
-      color: #eafff1;
+      color: var(--text-strong);
       letter-spacing: 0;
     }
 
@@ -473,28 +556,28 @@ function injectStyles() {
     }
 
     .status-badge--idle {
-      color: #94a3b8;
-      background: rgba(148, 163, 184, 0.08);
+      color: var(--text-muted);
+      background: rgba(141, 120, 104, 0.12);
     }
 
     .status-badge--running {
-      color: #34d399;
-      background: rgba(52, 211, 153, 0.1);
+      color: var(--accent-strong);
+      background: rgba(139, 111, 71, 0.12);
     }
 
     .status-badge--complete {
-      color: #60a5fa;
-      background: rgba(96, 165, 250, 0.1);
+      color: var(--accent);
+      background: rgba(160, 132, 92, 0.14);
     }
 
     .status-badge--error {
-      color: #fb7185;
-      background: rgba(251, 113, 133, 0.1);
+      color: var(--error);
+      background: rgba(140, 90, 75, 0.12);
     }
 
     .status-badge--paused {
-      color: #fbbf24;
-      background: rgba(251, 191, 36, 0.1);
+      color: var(--accent-soft);
+      background: rgba(196, 168, 130, 0.18);
     }
 
     .kick-panel {
@@ -519,7 +602,7 @@ function injectStyles() {
 
     .progress-header {
       margin-bottom: 12px;
-      color: #c6f6d5;
+      color: var(--text-base);
     }
 
     .kick-form {
@@ -535,11 +618,11 @@ function injectStyles() {
     .form-input,
     .form-textarea {
       width: 100%;
-      border: 1px solid #26543b;
+      border: 1px solid var(--border-strong);
       border-radius: 0;
       padding: 14px;
-      background: #020403;
-      color: #e2f7e9;
+      background: var(--input-bg);
+      color: var(--text-strong);
       font: inherit;
       line-height: 1.55;
       outline: none;
@@ -553,13 +636,13 @@ function injectStyles() {
 
     .form-input::placeholder,
     .form-textarea::placeholder {
-      color: #64748b;
+      color: var(--text-muted);
     }
 
     .form-input:focus,
     .form-textarea:focus {
-      border-color: #34d399;
-      box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12);
+      border-color: var(--accent-strong);
+      box-shadow: 0 0 0 3px rgba(160, 132, 92, 0.14);
     }
 
     .form-input:disabled,
@@ -580,34 +663,34 @@ function injectStyles() {
       border: 1px solid currentColor;
       padding: 10px 16px;
       background: transparent;
-      color: #d6f5e3;
+      color: var(--text-base);
       cursor: pointer;
       font-weight: 700;
     }
 
     .control-button--kick {
-      color: #34d399;
-      background: rgba(52, 211, 153, 0.08);
+      color: var(--accent-strong);
+      background: rgba(196, 168, 130, 0.18);
     }
 
     .control-button--stop {
-      color: #fb7185;
-      background: rgba(251, 113, 133, 0.08);
+      color: var(--error);
+      background: rgba(140, 90, 75, 0.08);
     }
 
     .control-button:hover:not(:disabled) {
-      background: rgba(214, 245, 227, 0.12);
+      background: rgba(196, 168, 130, 0.24);
     }
 
     .control-button:disabled {
       cursor: not-allowed;
-      color: #64748b;
-      background: rgba(100, 116, 139, 0.08);
+      color: var(--text-muted);
+      background: rgba(141, 120, 104, 0.1);
     }
 
     .control-error {
       margin: 0;
-      color: #fb7185;
+      color: var(--error);
       line-height: 1.5;
     }
 
@@ -615,13 +698,13 @@ function injectStyles() {
       width: 100%;
       height: 16px;
       overflow: hidden;
-      border: 1px solid #26543b;
-      background: #020403;
+      border: 1px solid var(--border-strong);
+      background: var(--track-bg);
     }
 
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, #22c55e, #38bdf8);
+      background: linear-gradient(90deg, var(--accent-soft), var(--accent-strong));
       transition: width 180ms ease;
     }
 
@@ -641,7 +724,7 @@ function injectStyles() {
     }
 
     .metric__value {
-      color: #f8fafc;
+      color: var(--text-strong);
       font-size: 1.05rem;
       line-height: 1.45;
       overflow-wrap: anywhere;
@@ -654,15 +737,15 @@ function injectStyles() {
     }
 
     .review-item {
-      border: 1px solid #173224;
-      background: #07100c;
+      border: 1px solid var(--border-soft);
+      background: var(--input-bg);
     }
 
     summary {
       min-height: 48px;
       padding: 12px 14px;
       cursor: pointer;
-      color: #e2f7e9;
+      color: var(--text-strong);
       list-style: none;
     }
 
@@ -676,30 +759,102 @@ function injectStyles() {
     }
 
     .review-item[open] .review-hint {
-      color: #38bdf8;
+      color: var(--accent-strong);
     }
 
     pre {
       max-height: 380px;
       margin: 0;
       overflow: auto;
-      border-top: 1px solid #173224;
+      border-top: 1px solid var(--border-soft);
       padding: 14px;
-      color: #cbd5e1;
+      color: var(--text-base);
+      background: var(--pre-bg);
       white-space: pre-wrap;
       word-break: break-word;
       line-height: 1.55;
     }
 
+    .checklist-panel {
+      border: 1px solid var(--border-soft);
+      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
+      padding: 18px;
+    }
+
+    .checklist-list {
+      margin: 14px 0 0 0;
+      padding-left: 22px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .checklist-list-item {
+      color: var(--text-base);
+      line-height: 1.55;
+    }
+
+    .checklist-inputs {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .checklist-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .checklist-row .form-input {
+      flex: 1;
+    }
+
+    .checklist-remove-btn {
+      flex: 0 0 auto;
+      width: 36px;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      color: var(--error);
+      cursor: pointer;
+      font-size: 1rem;
+    }
+
+    .checklist-remove-btn:hover:not(:disabled) {
+      background: rgba(140, 90, 75, 0.1);
+    }
+
+    .checklist-remove-btn:disabled {
+      cursor: not-allowed;
+      color: var(--text-muted);
+    }
+
+    .checklist-add-btn {
+      border: 1px dashed var(--border-strong);
+      background: transparent;
+      color: var(--accent-strong);
+      cursor: pointer;
+      padding: 8px 14px;
+      font: inherit;
+      text-align: left;
+    }
+
+    .checklist-add-btn:hover:not(:disabled) {
+      background: rgba(196, 168, 130, 0.16);
+    }
+
+    .checklist-add-btn:disabled {
+      cursor: not-allowed;
+      color: var(--text-muted);
+    }
+
     .empty-state,
     .load-error {
       margin: 0;
-      color: #94a3b8;
+      color: var(--text-muted);
       line-height: 1.6;
     }
 
     .load-error {
-      color: #fb7185;
+      color: var(--error);
     }
 
     @media (max-width: 760px) {

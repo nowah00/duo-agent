@@ -18,6 +18,7 @@ const CONFIG = {
   debounceMs: Number(process.env.WATCH_DEBOUNCE_MS || 3000),
   maxRounds: Number(process.env.AGENT_MAX_ROUNDS || 8),
   maxRetries: Number(process.env.AGENT_MAX_RETRIES || 1),
+  agentTimeoutMs: Number(process.env.AGENT_TIMEOUT_MS || 600000),
   extensions: new Set(['.js', '.ts', '.json', '.css', '.html']),
   firstAgent: process.env.FIRST_AGENT || 'codex',
 };
@@ -26,11 +27,10 @@ const AGENTS = {
   claude: {
     label: 'Claude Code',
     command: process.env.CLAUDE_CMD || 'claude',
-    args(prompt) {
+    args() {
       const allowedTools = process.env.CLAUDE_ALLOWED_TOOLS || 'Read,Edit,Bash(npm run build),Bash(npm test)';
       return [
         '--print',
-        prompt,
         '--allowedTools',
         allowedTools,
         '--permission-mode',
@@ -41,14 +41,13 @@ const AGENTS = {
   codex: {
     label: 'Codex',
     command: process.env.CODEX_CMD || 'codex',
-    args(prompt) {
+    args() {
       return [
         'exec',
         '--cd',
         ROOT_DIR,
         '--sandbox',
         'workspace-write',
-        prompt,
       ];
     },
   },
@@ -81,10 +80,10 @@ function readState() {
 }
 
 function writeState(nextState) {
-  fs.writeFileSync(
-    CONFIG.statePath,
-    JSON.stringify({ ...nextState, updatedAt: new Date().toISOString() }, null, 2),
-  );
+  const data = JSON.stringify({ ...nextState, updatedAt: new Date().toISOString() }, null, 2);
+  const tmpPath = CONFIG.statePath + '.tmp';
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, CONFIG.statePath);
 }
 
 function listSourceFiles(dir = CONFIG.watchDir) {
@@ -133,12 +132,16 @@ function nextAgentName(lastAgent) {
   return lastAgent === 'claude' ? 'codex' : 'claude';
 }
 
+function lastLines(text, n = 20) {
+  return text.split('\n').slice(-n).join('\n');
+}
+
 function hasCompleteStatus(output) {
-  return /STATUS:\s*COMPLETE/i.test(output);
+  return /STATUS:\s*COMPLETE/i.test(lastLines(output));
 }
 
 function hasNeedsNextStatus(output) {
-  return /STATUS:\s*NEEDS_NEXT/i.test(output);
+  return /STATUS:\s*NEEDS_NEXT/i.test(lastLines(output));
 }
 
 function buildPrompt(agentName, reason, state) {
@@ -192,14 +195,30 @@ function runAgent(agentName, reason) {
 
   log(`${agent.label} 실행 시작 (${nextState.round}/${CONFIG.maxRounds})`);
 
-  const child = spawn(agent.command, agent.args(prompt), {
+  const child = spawn(agent.command, agent.args(), {
     cwd: ROOT_DIR,
     shell: process.platform === 'win32',
     env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+  child.stdin.on('error', () => {});
+  child.stdin.write(prompt, 'utf8');
+  child.stdin.end();
+
   let output = '';
+
+  const timeoutId = setTimeout(() => {
+    log(`${agent.label} 시간 초과 (${CONFIG.agentTimeoutMs / 1000}초) — 강제 종료`);
+    child.kill();
+  }, CONFIG.agentTimeoutMs);
+
+  child.on('error', (err) => {
+    clearTimeout(timeoutId);
+    running = false;
+    log(`${agent.label} 실행 실패: ${err.message}`);
+    writeState({ ...readState(), status: 'error', lastReason: err.message });
+  });
 
   child.stdout.on('data', (chunk) => {
     const text = chunk.toString();
@@ -214,6 +233,7 @@ function runAgent(agentName, reason) {
   });
 
   child.on('close', (code) => {
+    clearTimeout(timeoutId);
     running = false;
     saveReview(agentName, output);
 
@@ -332,11 +352,16 @@ function runPreFlight(reason) {
 
   const claudeCmd = process.env.CLAUDE_CMD || 'claude';
   const prompt = buildPreFlightPrompt(task);
-  const child = spawn(claudeCmd, ['--print', prompt], {
+  const child = spawn(claudeCmd, ['--print', '--permission-mode', 'acceptEdits'], {
     cwd: ROOT_DIR,
+    shell: process.platform === 'win32',
     env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+
+  child.stdin.on('error', () => {});
+  child.stdin.write(prompt, 'utf8');
+  child.stdin.end();
 
   let output = '';
   child.stdout.on('data', chunk => { output += chunk.toString(); });

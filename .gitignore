@@ -2,6 +2,7 @@ node_modules/
 dist/
 reviews/
 watcher/state.json
+watcher/checklist.json
 TASK_DONE.md
 .env
 *.tmp.*

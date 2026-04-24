@@ -1,7 +1,7 @@
 {
-  "name": "ai-collab-template",
+  "name": "duo-agent",
   "version": "1.0.0",
-  "description": "Claude Code + Codex 협업 템플릿",
+  "description": "duo-agent",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

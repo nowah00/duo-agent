@@ -8,6 +8,7 @@ const TASK_PATH = path.join(ROOT_DIR, 'watcher', 'task.txt');
 const TASK_DONE_PATH = path.join(ROOT_DIR, 'TASK_DONE.md');
 const KICK_TRIGGER_PATH = path.join(ROOT_DIR, 'watcher', '.kick-trigger');
 const REVIEWS_DIR = path.join(ROOT_DIR, 'reviews');
+const CHECKLIST_PATH = path.join(ROOT_DIR, 'watcher', 'checklist.json');
 
 function sendJson(res, payload, statusCode = 200) {
   res.statusCode = statusCode;
@@ -42,7 +43,19 @@ async function readJsonBody(req) {
   }
 }
 
+async function readChecklist() {
+  try {
+    const raw = await fs.readFile(CHECKLIST_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data.items) ? data.items.filter(s => s.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
 async function readState() {
+  const checklist = await readChecklist();
+
   try {
     const raw = await fs.readFile(STATE_PATH, 'utf8');
     const state = JSON.parse(raw);
@@ -54,6 +67,7 @@ async function readState() {
       status: state.status || 'idle',
       updatedAt: state.updatedAt ?? null,
       lastReason: state.lastReason ?? null,
+      checklist,
     };
   } catch {
     return {
@@ -63,6 +77,7 @@ async function readState() {
       status: 'idle',
       updatedAt: null,
       lastReason: null,
+      checklist,
     };
   }
 }
@@ -79,6 +94,10 @@ async function kickAgent(req) {
     return { payload: { ok: false, error: 'task is required' }, statusCode: 400 };
   }
 
+  const checklist = Array.isArray(body.checklist)
+    ? body.checklist.map(s => String(s).trim()).filter(Boolean)
+    : [];
+
   await fs.rm(TASK_DONE_PATH, { force: true });
   await writeJsonFile(STATE_PATH, {
     round: 0,
@@ -86,6 +105,7 @@ async function kickAgent(req) {
     status: 'idle',
     retries: 0,
   });
+  await writeJsonFile(CHECKLIST_PATH, { items: checklist });
   await fs.writeFile(TASK_PATH, task, 'utf8');
   await fs.writeFile(KICK_TRIGGER_PATH, new Date().toISOString(), 'utf8');
 
