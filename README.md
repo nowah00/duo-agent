@@ -256,6 +256,23 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (정리 — 노후화 코드 최신화 및 불필요 규칙 제거)
+
+**`CLAUDE.md` 업데이트**
+- `watcher/` 수정 금지 규칙 제거 — 현재 개발 패턴과 불일치
+- 기능 추가 금지 규칙 제거 — 역할 분담 상 현실적이지 않음
+- STATUS 규칙을 JSON 형식으로 교체 (`STATUS: COMPLETE` → `{"status":"COMPLETE","summary":"..."}`)
+
+**`AGENTS.md` 업데이트**
+- `watcher/` 수정 금지, `CLAUDE.md`/`AGENTS.md` 수정 금지 규칙 제거
+- STATUS 규칙을 JSON 형식으로 교체
+
+**`watcher/kick.js` 수정**
+- JSDoc 4번 항목 수정: `src/duo-agent.kick.js 생성` → `watcher/.kick-trigger 생성` (실제 동작과 일치)
+- state 초기화에 `lastRole: null` 필드 추가 — `watch.js`의 state 스키마와 일치
+
+---
+
 ### 2026-04-24 (UI 개편 — 상태 설명 한국화, 오류 번역, 히스토리 세션 배지)
 
 **사용자 경험 개선** (`src/main.js`)

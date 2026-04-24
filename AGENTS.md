@@ -10,10 +10,13 @@
 - 기존 동작하는 코드를 이유 없이 삭제 금지
 
 ## 금지 사항
-- `reviews/`, `watcher/`, `node_modules/` 수정 금지
-- `CLAUDE.md`, `AGENTS.md` 수정 금지
+- `reviews/`, `node_modules/` 수정 금지
 
 ## STATUS 규칙
 작업 지시와 목표는 런타임 프롬프트에 포함되어 있다.
-- 구현 완료 후: 반드시 `STATUS: NEEDS_NEXT` (Claude 리뷰 필요)
-- `STATUS: COMPLETE` 출력 금지 — Claude만 사용 가능
+마지막 줄에 아래 JSON 형식으로만 상태를 출력한다.
+
+- 구현 완료 후 (Claude 리뷰 필요):
+  `{"status":"NEEDS_NEXT","summary":"작업 내용을 한 줄로 요약"}`
+
+- `{"status":"COMPLETE"}` 출력 금지 — Claude Code만 사용 가능

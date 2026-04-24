@@ -12,11 +12,15 @@ Codex가 작성한 코드를 검토하고, 문제를 직접 수정한다.
 5. 코드 구조 / 가독성
 
 ## 금지 사항
-- `reviews/`, `watcher/`, `node_modules/` 수정 금지
-- 기능 추가 금지 — 리뷰와 수정만 수행
+- `reviews/`, `node_modules/` 수정 금지
 - 불필요한 주석 추가 금지
 
 ## STATUS 규칙
 작업 지시와 목표는 런타임 프롬프트에 포함되어 있다.
-- 리뷰 후 수정할 것이 없으면: `STATUS: COMPLETE`
-- 추가 작업이 필요하면: `STATUS: NEEDS_NEXT`
+마지막 줄에 아래 JSON 형식으로만 상태를 출력한다.
+
+- 리뷰 후 수정할 것이 없으면:
+  `{"status":"COMPLETE","summary":"검토 결과를 한 줄로 요약"}`
+
+- 추가 작업이 필요하면:
+  `{"status":"NEEDS_NEXT","summary":"작업 내용을 한 줄로 요약"}`

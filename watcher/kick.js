@@ -6,7 +6,7 @@
  *   1. 이전 완료 파일(TASK_DONE.md) 제거
  *   2. 협업 상태(state.json) 초기화
  *   3. 작업 내용을 watcher/task.txt에 저장
- *   4. src/duo-agent.kick.js 생성 → watch.js가 감지해 첫 에이전트 실행
+ *   4. watcher/.kick-trigger 생성 → watch.js가 감지해 첫 에이전트 실행
  */
 
 const fs = require('fs');
@@ -48,7 +48,7 @@ if (fs.existsSync(PATHS.done)) {
 fs.writeFileSync(
   PATHS.state,
   JSON.stringify(
-    { round: 0, lastAgent: null, status: 'idle', updatedAt: new Date().toISOString(), lastReason: null },
+    { round: 0, lastRole: null, lastAgent: null, status: 'idle', updatedAt: new Date().toISOString(), lastReason: null },
     null,
     2,
   ),
