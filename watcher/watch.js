@@ -13,17 +13,18 @@ const CONFIG = {
   statePath: path.join(__dirname, 'state.json'),
   donePath: path.join(ROOT_DIR, 'TASK_DONE.md'),
   triggerPath: path.join(__dirname, '.kick-trigger'),
-  chatHistoryPath: path.join(__dirname, 'chat-history.json'),
   goalsPath: path.join(__dirname, 'task-goals.json'),
   debounceMs: Number(process.env.WATCH_DEBOUNCE_MS || 3000),
   maxRounds: Number(process.env.AGENT_MAX_ROUNDS || 8),
   maxRetries: Number(process.env.AGENT_MAX_RETRIES || 1),
   agentTimeoutMs: Number(process.env.AGENT_TIMEOUT_MS || 600000),
   extensions: new Set(['.js', '.ts', '.json', '.css', '.html']),
-  firstAgent: process.env.FIRST_AGENT || 'codex',
+  agentA: process.env.AGENT_A || 'codex',   // 구현 담당 (role 'a')
+  agentB: process.env.AGENT_B || 'claude',  // 리뷰 담당 (role 'b')
 };
 
-const AGENTS = {
+// 에이전트 구현체 레지스트리 — 키만 추가하면 새 에이전트 지원 가능
+const AGENT_REGISTRY = {
   claude: {
     label: 'Claude Code',
     command: process.env.CLAUDE_CMD || 'claude',
@@ -57,6 +58,27 @@ const timers = new Map();
 let running = false;
 let queuedReason = null;
 
+// role 'a' | 'b' → 에이전트 설정 반환
+function getAgent(role) {
+  const key = role === 'a' ? CONFIG.agentA : CONFIG.agentB;
+  const agent = AGENT_REGISTRY[key];
+  if (!agent) throw new Error(`알 수 없는 에이전트 키: ${key}`);
+  return { ...agent, key };
+}
+
+function nextRole(lastRole) {
+  if (!lastRole) return 'a';
+  return lastRole === 'a' ? 'b' : 'a';
+}
+
+// 이전 state(lastAgent 기반)에서 lastRole을 추론 — 하위 호환
+function deriveRole(lastAgent) {
+  if (!lastAgent) return null;
+  if (lastAgent === CONFIG.agentA) return 'a';
+  if (lastAgent === CONFIG.agentB) return 'b';
+  return null;
+}
+
 function ensureDirs() {
   fs.mkdirSync(CONFIG.reviewsDir, { recursive: true });
   fs.mkdirSync(CONFIG.watchDir, { recursive: true });
@@ -77,14 +99,17 @@ function formatDuration(ms) {
 }
 
 function readState() {
-  if (!fs.existsSync(CONFIG.statePath)) {
-    return { round: 0, lastAgent: null, status: 'idle', updatedAt: null, lastReason: null, retries: 0 };
-  }
+  const defaults = { round: 0, lastRole: null, lastAgent: null, status: 'idle', updatedAt: null, lastReason: null, retries: 0 };
+
+  if (!fs.existsSync(CONFIG.statePath)) return defaults;
 
   try {
-    return JSON.parse(fs.readFileSync(CONFIG.statePath, 'utf8'));
+    const state = JSON.parse(fs.readFileSync(CONFIG.statePath, 'utf8'));
+    // lastRole 없는 이전 state → lastAgent에서 추론
+    const lastRole = state.lastRole ?? deriveRole(state.lastAgent);
+    return { ...defaults, ...state, lastRole };
   } catch {
-    return { round: 0, lastAgent: null, status: 'idle', updatedAt: null, lastReason: 'state reset after invalid JSON', retries: 0 };
+    return { ...defaults, lastReason: 'state reset after invalid JSON' };
   }
 }
 
@@ -129,37 +154,54 @@ function sourceFingerprint() {
   return hash.digest('hex');
 }
 
-function saveReview(agentName, output) {
+function saveReview(agentKey, output) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reviewPath = path.join(CONFIG.reviewsDir, `${timestamp}_${agentName}.md`);
+  const reviewPath = path.join(CONFIG.reviewsDir, `${timestamp}_${agentKey}.md`);
   fs.writeFileSync(reviewPath, output.trim() ? output : '(no output)');
   log(`결과 저장: ${path.relative(ROOT_DIR, reviewPath)}`);
-}
-
-function nextAgentName(lastAgent) {
-  if (!lastAgent) return CONFIG.firstAgent;
-  return lastAgent === 'claude' ? 'codex' : 'claude';
 }
 
 function lastLines(text, n = 20) {
   return text.split('\n').slice(-n).join('\n');
 }
 
-function hasCompleteStatus(output) {
-  return /STATUS:\s*COMPLETE/i.test(lastLines(output));
+// 마지막 줄에서 JSON 상태 파싱 시도
+// 에이전트가 {"status":"COMPLETE","summary":"..."} 형태로 출력하면 신뢰도 높은 파싱
+function parseStatusJson(output) {
+  const lines = output.trimEnd().split('\n');
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 5); i--) {
+    try {
+      const parsed = JSON.parse(lines[i].trim());
+      if (typeof parsed.status === 'string') {
+        return {
+          status: parsed.status.toUpperCase(),
+          summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+        };
+      }
+    } catch {}
+  }
+  return null;
 }
 
-function hasNeedsNextStatus(output) {
-  return /STATUS:\s*NEEDS_NEXT/i.test(lastLines(output));
+// JSON 파싱 우선, 실패 시 텍스트 regex로 fallback
+function getOutputStatus(output) {
+  const json = parseStatusJson(output);
+  if (json) return json;
+
+  const tail = lastLines(output);
+  if (/STATUS:\s*COMPLETE/i.test(tail)) return { status: 'COMPLETE', summary: '' };
+  if (/STATUS:\s*NEEDS_NEXT/i.test(tail)) return { status: 'NEEDS_NEXT', summary: '' };
+  return null;
 }
 
-function buildPrompt(agentName, reason, state) {
-  const peer = agentName === 'claude' ? 'Codex' : 'Claude Code';
+function buildPrompt(role, reason, state) {
+  const agent = getAgent(role);
+  const peer = getAgent(role === 'a' ? 'b' : 'a');
 
   return buildProjectPrompt({
-    agentName,
-    agentLabel: AGENTS[agentName].label,
-    peerLabel: peer,
+    role,
+    agentLabel: agent.label,
+    peerLabel: peer.label,
     rootDir: ROOT_DIR,
     reason,
     round: state.round + 1,
@@ -167,7 +209,7 @@ function buildPrompt(agentName, reason, state) {
   });
 }
 
-function runAgent(agentName, reason) {
+function runAgent(role, reason) {
   if (fs.existsSync(CONFIG.donePath)) {
     log(`완료 파일이 있어 실행하지 않음: ${path.relative(ROOT_DIR, CONFIG.donePath)}`);
     return;
@@ -186,13 +228,14 @@ function runAgent(agentName, reason) {
     return;
   }
 
-  const agent = AGENTS[agentName];
-  const prompt = buildPrompt(agentName, reason, state);
+  const agent = getAgent(role);
+  const prompt = buildPrompt(role, reason, state);
   const beforeHash = sourceFingerprint();
   const nextState = {
     ...state,
     round: state.round + 1,
-    lastAgent: agentName,
+    lastRole: role,
+    lastAgent: agent.key,
     status: 'running',
     lastReason: reason,
     retries: state.retries || 0,
@@ -202,7 +245,7 @@ function runAgent(agentName, reason) {
   running = true;
   queuedReason = null;
 
-  log(`${agent.label} 실행 시작 (${nextState.round}/${CONFIG.maxRounds})`);
+  log(`${agent.label} 실행 시작 (${nextState.round}/${CONFIG.maxRounds}) [role:${role}]`);
 
   const child = spawn(agent.command, agent.args(), {
     cwd: ROOT_DIR,
@@ -244,16 +287,18 @@ function runAgent(agentName, reason) {
   child.on('close', (code) => {
     clearTimeout(timeoutId);
     running = false;
-    saveReview(agentName, output);
+    saveReview(agent.key, output);
 
     const afterHash = sourceFingerprint();
     const changed = beforeHash !== afterHash;
-    const complete = hasCompleteStatus(output);
-    const needsNext = hasNeedsNextStatus(output);
+    const parsed = getOutputStatus(output);
+    const complete = parsed?.status === 'COMPLETE';
+    const needsNext = parsed?.status === 'NEEDS_NEXT';
+    const summary = parsed?.summary || '';
     const latestState = readState();
 
-    // Claude만 루프를 종료할 수 있음
-    if (complete && agentName === 'claude') {
+    // 리뷰어(role 'b')만 루프를 종료할 수 있음
+    if (complete && role === 'b') {
       const doneText = [
         '# Task Done',
         '',
@@ -261,19 +306,20 @@ function runAgent(agentName, reason) {
         `Round: ${latestState.round}/${CONFIG.maxRounds}`,
         `Exit code: ${code}`,
         `Changed source: ${changed ? 'yes' : 'no'}`,
+        summary ? `Summary: ${summary}` : null,
         `Completed at: ${new Date().toLocaleString('ko-KR')}`,
         '',
         '사용자가 최종 확인할 단계입니다.',
-      ].join('\n');
+      ].filter(l => l !== null).join('\n');
 
       fs.writeFileSync(CONFIG.donePath, doneText);
-      writeState({ ...latestState, status: 'complete', lastReason: 'agent reported complete', retries: 0 });
+      writeState({ ...latestState, status: 'complete', lastSummary: summary, lastReason: 'agent reported complete', retries: 0 });
       log(`완료됨: ${path.relative(ROOT_DIR, CONFIG.donePath)}`);
       return;
     }
 
-    if (complete && agentName !== 'claude') {
-      log(`${agent.label}가 COMPLETE를 출력했지만 Claude 리뷰가 필요해 다음 라운드로 넘김`);
+    if (complete && role !== 'b') {
+      log(`${agent.label}가 COMPLETE를 출력했지만 리뷰어 확인이 필요해 다음 라운드로 넘김`);
     }
 
     if (latestState.round >= CONFIG.maxRounds) {
@@ -288,7 +334,7 @@ function runAgent(agentName, reason) {
       if (retries < CONFIG.maxRetries) {
         writeState({ ...latestState, status: 'running', lastReason: `retry ${retries + 1}/${CONFIG.maxRetries}`, retries: retries + 1 });
         log(`${agent.label} 실패 — 재시도 (${retries + 1}/${CONFIG.maxRetries})`);
-        setTimeout(() => runAgent(agentName, `retry: ${reason}`), CONFIG.debounceMs);
+        setTimeout(() => runAgent(role, `retry: ${reason}`), CONFIG.debounceMs);
         return;
       }
       writeState({ ...latestState, status: 'error', lastReason: `${agent.label} exit ${code}`, retries: 0 });
@@ -299,13 +345,13 @@ function runAgent(agentName, reason) {
     // 변경도 없고 계속 신호도 없으면 대기
     if (!changed && !needsNext) {
       writeState({ ...latestState, status: 'paused', lastReason: 'no changes and no NEEDS_NEXT', retries: 0 });
-      log('변경 없음 + STATUS 미출력 — 사용자 확인 대기');
+      log('변경 없음 + 상태 미출력 — 사용자 확인 대기');
       return;
     }
 
     const followUpReason = queuedReason || `${agent.label} completed; changed=${changed}`;
-    writeState({ ...latestState, retries: 0 });
-    setTimeout(() => runAgent(nextAgentName(agentName), followUpReason), CONFIG.debounceMs);
+    writeState({ ...latestState, lastSummary: summary, retries: 0 });
+    setTimeout(() => runAgent(nextRole(role), followUpReason), CONFIG.debounceMs);
   });
 }
 
@@ -315,7 +361,7 @@ function schedule(reason) {
     'main',
     setTimeout(() => {
       const state = readState();
-      runAgent(nextAgentName(state.lastAgent), reason);
+      runAgent(nextRole(state.lastRole), reason);
     }, CONFIG.debounceMs),
   );
 }
@@ -329,6 +375,9 @@ function handleChange(filePath) {
 }
 
 function buildPreFlightPrompt(task) {
+  const agentALabel = AGENT_REGISTRY[CONFIG.agentA]?.label || CONFIG.agentA;
+  const agentBLabel = AGENT_REGISTRY[CONFIG.agentB]?.label || CONFIG.agentB;
+
   return [
     '다음은 사용자가 입력한 작업 지시다.',
     '',
@@ -336,8 +385,8 @@ function buildPreFlightPrompt(task) {
     '',
     '이 내용을 분석해서 아래 JSON 형식만 출력하라. 설명 없이 JSON만 출력할 것.',
     '{',
-    '  "codexGoals": "Codex(구현 담당)에게 줄 목표. 구체적인 구현 지침을 한국어로 작성.",',
-    '  "claudeGoals": "Claude(리뷰 담당)에게 줄 검토 기준. 검토 항목을 한국어로 작성."',
+    `  "codexGoals": "${agentALabel}(구현 담당)에게 줄 목표. 구체적인 구현 지침을 한국어로 작성.",`,
+    `  "claudeGoals": "${agentBLabel}(리뷰 담당)에게 줄 검토 기준. 검토 항목을 한국어로 작성."`,
     '}',
   ].join('\n');
 }
@@ -401,11 +450,10 @@ function runPreFlight(reason) {
 
 function startMainLoop(reason) {
   const state = readState();
-  runAgent(nextAgentName(state.lastAgent), reason);
+  runAgent(nextRole(state.lastRole), reason);
 }
 
 function handleTrigger() {
-  // 트리거 파일 즉시 삭제 (src/ 오염 방지)
   try { fs.unlinkSync(CONFIG.triggerPath); } catch {}
 
   const taskPath = path.join(__dirname, 'task.txt');
@@ -418,7 +466,6 @@ function handleTrigger() {
 
 ensureDirs();
 
-// src/ 파일 변경 감시
 const srcWatcher = chokidar.watch(CONFIG.watchDir, {
   ignored: /(^|[/\\])\../,
   persistent: true,
@@ -426,7 +473,6 @@ const srcWatcher = chokidar.watch(CONFIG.watchDir, {
 });
 srcWatcher.on('add', handleChange).on('change', handleChange);
 
-// watcher/.kick-trigger 감시 (src/ 오염 없이 kick 트리거)
 const triggerWatcher = chokidar.watch(CONFIG.triggerPath, {
   persistent: true,
   ignoreInitial: true,
@@ -434,8 +480,10 @@ const triggerWatcher = chokidar.watch(CONFIG.triggerPath, {
 });
 triggerWatcher.on('add', handleTrigger).on('change', handleTrigger);
 
-log('AI 협업 감시 시작');
+const agentALabel = AGENT_REGISTRY[CONFIG.agentA]?.label || CONFIG.agentA;
+const agentBLabel = AGENT_REGISTRY[CONFIG.agentB]?.label || CONFIG.agentB;
+log('duo-agent 감시 시작');
+log(`에이전트: A=${agentALabel} (구현) | B=${agentBLabel} (리뷰)`);
 log(`감시 대상: ${CONFIG.watchDir}`);
-log(`최대 라운드: ${CONFIG.maxRounds} | 재시도: ${CONFIG.maxRetries}`);
-log(`완료 파일: ${CONFIG.donePath}`);
-log('재시작하려면 npm run kick "작업 내용"을 실행하세요.');
+log(`최대 라운드: ${CONFIG.maxRounds} | 재시도: ${CONFIG.maxRetries} | 타임아웃: ${formatDuration(CONFIG.agentTimeoutMs)}`);
+log('시작하려면 npm run kick "작업 내용"을 실행하세요.');
