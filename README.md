@@ -256,6 +256,35 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (리팩토링 — 에이전트 추상화 및 안정화)
+
+**에이전트 추상화** (`watcher/watch.js`, `watcher/prompt.config.js`, `.env.example`)
+- `AGENTS` → `AGENT_REGISTRY`로 분리 — 키만 추가하면 새 에이전트 지원 가능한 플러그인 구조
+- `FIRST_AGENT` → `AGENT_A`(구현 담당) / `AGENT_B`(리뷰 담당) 환경변수로 교체
+- `agentName` 하드코딩 → `role('a'|'b')` 기반으로 전환 — 에이전트 종류와 역할 분리
+- `AGENT_A=claude AGENT_B=claude` 설정 시 Codex 없이도 동작 (Codex 의존성 제거)
+- 기존 `state.lastAgent` → `lastRole` 자동 추론으로 하위 호환 유지
+
+**구조화된 JSON 상태 출력** (`watcher/watch.js`, `watcher/prompt.config.js`)
+- 루프 종료 조건을 텍스트 파싱에서 JSON 파싱으로 전환
+  ```json
+  {"status":"NEEDS_NEXT","summary":"로그인 API 구현 완료"}
+  {"status":"COMPLETE","summary":"리뷰 완료, 버그 없음"}
+  ```
+- `parseStatusJson()` — 마지막 5줄에서 JSON 상태 파싱
+- `getOutputStatus()` — JSON 우선, 실패 시 기존 `STATUS: COMPLETE` 텍스트 regex로 fallback (하위 호환)
+- `summary` 필드를 `state.lastSummary` 및 `TASK_DONE.md`에 자동 저장
+- `STOP_RULES`를 JSON 출력 형식으로 갱신
+
+**시간 출력 개선** (`src/main.js`, `watcher/watch.js`)
+- 대시보드 `updated at`: ISO 날짜 → 상대 시간 (`방금` / `3분 전` / `2시간 전`)
+- 리뷰 목록 파일명: ISO 타임스탬프 → `오후 3:57 · Claude Code` 형식
+- 터미널 로그: `오전/오후` 제거 → 24시간 형식 (`13:07:46`)
+- 타임아웃 메시지: `600초` → `10분`
+- `TASK_DONE.md Completed at`: ISO → 한국어 로컬 형식
+
+---
+
 ### 2026-04-24 (버그 수정 및 기능 추가)
 
 **무한 로딩 버그 수정** (`watcher/watch.js`)
