@@ -256,6 +256,17 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (기능 추가 — 프롬프트·결과 내역 매칭)
+
+**프롬프트 요약 저장 및 Output/Prompt 탭** (`watcher/watch.js`, `vite.config.js`, `src/main.js`)
+- `saveReview()` 함수가 에이전트 출력 `.md` 외에 프롬프트 앞 15줄을 `_prompt.md`로 함께 저장
+- `/api/reviews`에서 `_prompt.md`를 출력 파일과 페어링 — `promptSummary` 필드로 반환
+- 대시보드 `Recent Reviews`에 Output / Prompt 탭 추가 — 결과 보고서와 프롬프트 요약을 나란히 확인 가능
+- 탭 선택 상태는 re-render 간 유지됨 (`reviewTabs` Map)
+- `_prompt.md`가 없는 기존 파일은 탭 없이 기존 방식으로 표시
+
+---
+
 ### 2026-04-24 (기능 추가 — 피드백 채널 및 라운드 요약)
 
 **중간 피드백 채널** (`watcher/prompt.config.js`, `vite.config.js`, `src/main.js`)
