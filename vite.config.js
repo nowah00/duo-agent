@@ -164,30 +164,30 @@ async function stopAgent() {
 async function readRecentReviews() {
   try {
     const entries = await fs.readdir(REVIEWS_DIR, { withFileTypes: true });
-    const files = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile())
-        .map(async (entry) => {
-          const filePath = path.join(REVIEWS_DIR, entry.name);
-          const stats = await fs.stat(filePath);
+    const names = entries.filter((e) => e.isFile()).map((e) => e.name);
 
-          return {
-            name: entry.name,
-            filePath,
-            mtimeMs: stats.mtimeMs,
-          };
-        }),
+    const promptFileSet = new Set(names.filter((n) => n.endsWith('_prompt.md')));
+    const outputFiles = names.filter((n) => !n.endsWith('_prompt.md'));
+
+    const withStats = await Promise.all(
+      outputFiles.map(async (name) => {
+        const filePath = path.join(REVIEWS_DIR, name);
+        const stats = await fs.stat(filePath);
+        return { name, filePath, mtimeMs: stats.mtimeMs };
+      }),
     );
 
-    const recentFiles = files
-      .sort((a, b) => b.mtimeMs - a.mtimeMs)
-      .slice(0, 5);
+    const recent = withStats.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 5);
 
     return Promise.all(
-      recentFiles.map(async (file) => ({
-        name: file.name,
-        content: await fs.readFile(file.filePath, 'utf8'),
-      })),
+      recent.map(async ({ name, filePath }) => {
+        const content = await fs.readFile(filePath, 'utf8');
+        const promptFileName = name.replace(/\.md$/, '_prompt.md');
+        const promptSummary = promptFileSet.has(promptFileName)
+          ? await fs.readFile(path.join(REVIEWS_DIR, promptFileName), 'utf8').catch(() => null)
+          : null;
+        return { name, content, promptSummary };
+      }),
     );
   } catch {
     return [];

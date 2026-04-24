@@ -155,11 +155,16 @@ function sourceFingerprint() {
   return hash.digest('hex');
 }
 
-function saveReview(agentKey, output) {
+function saveReview(agentKey, prompt, output) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reviewPath = path.join(CONFIG.reviewsDir, `${timestamp}_${agentKey}.md`);
-  fs.writeFileSync(reviewPath, output.trim() ? output : '(no output)');
-  log(`결과 저장: ${path.relative(ROOT_DIR, reviewPath)}`);
+  const base = path.join(CONFIG.reviewsDir, `${timestamp}_${agentKey}`);
+
+  fs.writeFileSync(`${base}.md`, output.trim() ? output : '(no output)');
+
+  const promptSummary = prompt.split('\n').slice(0, 15).join('\n');
+  fs.writeFileSync(`${base}_prompt.md`, promptSummary);
+
+  log(`결과 저장: ${path.relative(ROOT_DIR, base + '.md')}`);
 }
 
 function getChangedFiles() {
@@ -297,7 +302,7 @@ function runAgent(role, reason) {
   child.on('close', (code) => {
     clearTimeout(timeoutId);
     running = false;
-    saveReview(agent.key, output);
+    saveReview(agent.key, prompt, output);
 
     const afterHash = sourceFingerprint();
     const changed = beforeHash !== afterHash;

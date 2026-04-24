@@ -14,6 +14,7 @@ const AGENT_LABELS = {
 
 const app = document.querySelector('#app');
 const openReviews = new Set();
+const reviewTabs = new Map();
 
 let currentState = {
   round: 0,
@@ -328,7 +329,6 @@ function renderReviews(container, reviews) {
     const summary = createElement('summary');
     const name = createElement('span', { className: 'review-name', text: formatReviewName(review.name) });
     const hint = createElement('span', { className: 'review-hint', text: 'open' });
-    const content = createElement('pre', { text: review.content || '(empty)' });
 
     details.open = openReviews.has(review.name);
     hint.textContent = details.open ? 'close' : 'open';
@@ -343,7 +343,50 @@ function renderReviews(container, reviews) {
     });
 
     summary.append(name, hint);
-    details.append(summary, content);
+    details.append(summary);
+
+    if (review.promptSummary) {
+      const activeTab = reviewTabs.get(review.name) || 'output';
+      const tabBar = createElement('div', { className: 'review-tabs' });
+      const outputTab = createElement('button', {
+        className: `review-tab${activeTab === 'output' ? ' review-tab--active' : ''}`,
+        text: 'Output',
+      });
+      const promptTab = createElement('button', {
+        className: `review-tab${activeTab === 'prompt' ? ' review-tab--active' : ''}`,
+        text: 'Prompt',
+      });
+      const outputContent = createElement('pre', { text: review.content || '(empty)' });
+      const promptContent = createElement('pre', { text: review.promptSummary });
+
+      outputTab.type = 'button';
+      promptTab.type = 'button';
+
+      if (activeTab !== 'output') outputContent.style.display = 'none';
+      if (activeTab !== 'prompt') promptContent.style.display = 'none';
+
+      outputTab.addEventListener('click', () => {
+        reviewTabs.set(review.name, 'output');
+        outputContent.style.display = '';
+        promptContent.style.display = 'none';
+        outputTab.classList.add('review-tab--active');
+        promptTab.classList.remove('review-tab--active');
+      });
+
+      promptTab.addEventListener('click', () => {
+        reviewTabs.set(review.name, 'prompt');
+        outputContent.style.display = 'none';
+        promptContent.style.display = '';
+        outputTab.classList.remove('review-tab--active');
+        promptTab.classList.add('review-tab--active');
+      });
+
+      tabBar.append(outputTab, promptTab);
+      details.append(tabBar, outputContent, promptContent);
+    } else {
+      details.append(createElement('pre', { text: review.content || '(empty)' }));
+    }
+
     list.append(details);
   });
 
@@ -1012,6 +1055,36 @@ function injectStyles() {
       font-size: 0.85rem;
       line-height: 1.5;
       overflow-wrap: anywhere;
+    }
+
+    .review-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--pre-bg);
+    }
+
+    .review-tab {
+      padding: 8px 14px;
+      border: none;
+      border-right: 1px solid var(--border-soft);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .review-tab:hover {
+      color: var(--text-base);
+      background: rgba(196, 168, 130, 0.1);
+    }
+
+    .review-tab--active {
+      color: var(--accent-strong);
+      background: var(--input-bg);
+      font-weight: 700;
     }
 
     @media (max-width: 760px) {
