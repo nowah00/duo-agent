@@ -63,10 +63,20 @@ async function readChecklist() {
   }
 }
 
+async function readCurrentTask() {
+  try {
+    const text = await fs.readFile(TASK_PATH, 'utf8');
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function readState() {
-  const [checklist, pendingFeedback] = await Promise.all([
+  const [checklist, pendingFeedback, currentTask] = await Promise.all([
     readChecklist(),
     readPendingFeedback(),
+    readCurrentTask(),
   ]);
 
   try {
@@ -84,6 +94,7 @@ async function readState() {
       lastChangedFiles: Array.isArray(state.lastChangedFiles) ? state.lastChangedFiles : [],
       checklist,
       hasPendingFeedback: Boolean(pendingFeedback),
+      currentTask,
     };
   } catch {
     return {
@@ -97,6 +108,7 @@ async function readState() {
       lastChangedFiles: [],
       checklist,
       hasPendingFeedback: Boolean(pendingFeedback),
+      currentTask,
     };
   }
 }
@@ -127,6 +139,9 @@ async function kickAgent(req) {
   await writeJsonFile(CHECKLIST_PATH, { items: checklist });
   await fs.writeFile(TASK_PATH, task, 'utf8');
   await fs.writeFile(KICK_TRIGGER_PATH, new Date().toISOString(), 'utf8');
+  await fs.mkdir(REVIEWS_DIR, { recursive: true });
+  const kickTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  await fs.writeFile(path.join(REVIEWS_DIR, `${kickTimestamp}_task.md`), task, 'utf8');
 
   return { payload: { ok: true }, statusCode: 200 };
 }
@@ -194,6 +209,68 @@ async function readRecentReviews() {
   }
 }
 
+async function readHistory() {
+  function parseMs(name) {
+    const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z/);
+    if (!m) return 0;
+    const [, date, hh, mm, ss, ms] = m;
+    return new Date(`${date}T${hh}:${mm}:${ss}.${ms}Z`).getTime();
+  }
+
+  try {
+    await fs.mkdir(REVIEWS_DIR, { recursive: true });
+    const entries = await fs.readdir(REVIEWS_DIR, { withFileTypes: true });
+    const names = entries.filter((e) => e.isFile()).map((e) => e.name);
+
+    const taskFiles = names
+      .filter((n) => n.endsWith('_task.md'))
+      .map((n) => ({ name: n, ms: parseMs(n) }))
+      .sort((a, b) => b.ms - a.ms);
+
+    const promptFileSet = new Set(names.filter((n) => n.endsWith('_prompt.md')));
+    const outputFiles = names
+      .filter((n) => !n.endsWith('_task.md') && !n.endsWith('_prompt.md'))
+      .map((n) => ({ name: n, ms: parseMs(n) }));
+
+    if (!taskFiles.length) return [];
+
+    return Promise.all(
+      taskFiles.map(async (task, index) => {
+        const nextTask = taskFiles[index + 1];
+        const sessionOutputs = outputFiles
+          .filter((f) => f.ms >= task.ms && (!nextTask || f.ms < nextTask.ms))
+          .sort((a, b) => b.ms - a.ms);
+
+        const taskContent = await fs.readFile(
+          path.join(REVIEWS_DIR, task.name), 'utf8',
+        ).catch(() => '');
+
+        const reviews = await Promise.all(
+          sessionOutputs.map(async ({ name }) => {
+            const content = await fs.readFile(
+              path.join(REVIEWS_DIR, name), 'utf8',
+            ).catch(() => '(empty)');
+            const promptFileName = name.replace(/\.md$/, '_prompt.md');
+            const promptSummary = promptFileSet.has(promptFileName)
+              ? await fs.readFile(path.join(REVIEWS_DIR, promptFileName), 'utf8').catch(() => null)
+              : null;
+            return { name, content, promptSummary };
+          }),
+        );
+
+        return {
+          taskName: task.name,
+          taskTimestamp: task.ms,
+          taskContent: taskContent.trim(),
+          reviews,
+        };
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
 function duoAgentApiPlugin() {
   return {
     name: 'duo-agent-api',
@@ -208,6 +285,11 @@ function duoAgentApiPlugin() {
 
         if (req.method === 'GET' && url === '/api/reviews') {
           sendJson(res, await readRecentReviews());
+          return;
+        }
+
+        if (req.method === 'GET' && url === '/api/history') {
+          sendJson(res, await readHistory());
           return;
         }
 

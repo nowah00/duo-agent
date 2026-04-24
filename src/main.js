@@ -26,8 +26,10 @@ let currentState = {
   lastSummary: null,
   lastChangedFiles: [],
   hasPendingFeedback: false,
+  currentTask: null,
 };
-let currentReviews = [];
+let currentHistory = [];
+let currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
 let loadError = null;
 let controlError = null;
 let pendingAction = null;
@@ -95,6 +97,19 @@ function formatReviewName(filename) {
   }).format(date);
 
   return `${timeStr} · ${agentLabel}`;
+}
+
+function formatSessionTimestamp(ms) {
+  if (!ms) return '-';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '-';
+  const isToday = new Date().toDateString() === date.toDateString();
+  return new Intl.DateTimeFormat('ko-KR', {
+    ...(isToday ? {} : { month: 'numeric', day: 'numeric' }),
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date);
 }
 
 function getStatus(state) {
@@ -303,91 +318,146 @@ function renderKickPanel(container, state) {
   container.append(panel);
 }
 
-function renderReviews(container, reviews) {
-  const section = createElement('section', { className: 'reviews-panel' });
+function buildReviewItem(review) {
+  const details = createElement('details', { className: 'review-item' });
+  const summaryEl = createElement('summary');
+  const nameEl = createElement('span', { className: 'review-name', text: formatReviewName(review.name) });
+  const hint = createElement('span', { className: 'review-hint', text: 'open' });
+
+  details.open = openReviews.has(review.name);
+  hint.textContent = details.open ? 'close' : 'open';
+  details.addEventListener('toggle', () => {
+    if (details.open) openReviews.add(review.name);
+    else openReviews.delete(review.name);
+    hint.textContent = details.open ? 'close' : 'open';
+  });
+
+  summaryEl.append(nameEl, hint);
+  details.append(summaryEl);
+
+  if (review.promptSummary) {
+    const activeTab = reviewTabs.get(review.name) || 'output';
+    const tabBar = createElement('div', { className: 'review-tabs' });
+    const outputTab = createElement('button', {
+      className: `review-tab${activeTab === 'output' ? ' review-tab--active' : ''}`,
+      text: 'Output',
+    });
+    const promptTab = createElement('button', {
+      className: `review-tab${activeTab === 'prompt' ? ' review-tab--active' : ''}`,
+      text: 'Prompt',
+    });
+    const outputContent = createElement('pre', { text: review.content || '(empty)' });
+    const promptContent = createElement('pre', { text: review.promptSummary });
+
+    outputTab.type = 'button';
+    promptTab.type = 'button';
+
+    if (activeTab !== 'output') outputContent.style.display = 'none';
+    if (activeTab !== 'prompt') promptContent.style.display = 'none';
+
+    outputTab.addEventListener('click', () => {
+      reviewTabs.set(review.name, 'output');
+      outputContent.style.display = '';
+      promptContent.style.display = 'none';
+      outputTab.classList.add('review-tab--active');
+      promptTab.classList.remove('review-tab--active');
+    });
+    promptTab.addEventListener('click', () => {
+      reviewTabs.set(review.name, 'prompt');
+      outputContent.style.display = 'none';
+      promptContent.style.display = '';
+      outputTab.classList.remove('review-tab--active');
+      promptTab.classList.add('review-tab--active');
+    });
+
+    tabBar.append(outputTab, promptTab);
+    details.append(tabBar, outputContent, promptContent);
+  } else {
+    details.append(createElement('pre', { text: review.content || '(empty)' }));
+  }
+
+  return details;
+}
+
+function renderCurrentTask(container, state) {
+  if (!state.currentTask) return;
+
+  const panel = createElement('section', { className: 'current-task-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const statusLabel = getStatus(state) === 'running' ? '실행 중' : '대기';
+
+  header.append(
+    createElement('h2', { text: 'Current Task' }),
+    createElement('span', { text: statusLabel }),
+  );
+  panel.append(header, createElement('pre', { text: state.currentTask }));
+  container.append(panel);
+}
+
+function renderNav(container) {
+  const nav = createElement('nav', { className: 'main-nav' });
+  const dashLink = createElement('a', {
+    className: `nav-link${currentPage === 'dashboard' ? ' nav-link--active' : ''}`,
+    text: 'Dashboard',
+  });
+  const historyLink = createElement('a', {
+    className: `nav-link${currentPage === 'history' ? ' nav-link--active' : ''}`,
+    text: 'History',
+  });
+
+  dashLink.href = '#';
+  historyLink.href = '#history';
+  nav.append(dashLink, historyLink);
+  container.append(nav);
+}
+
+function renderHistoryPage(container) {
+  const section = createElement('section', { className: 'history-panel' });
   const header = createElement('div', { className: 'section-header' });
 
   header.append(
-    createElement('h2', { text: 'Recent Reviews' }),
-    createElement('span', { text: `${reviews.length} files` }),
+    createElement('h2', { text: 'History' }),
+    createElement('span', { text: `${currentHistory.length} sessions` }),
   );
   section.append(header);
 
-  if (!reviews.length) {
+  if (!currentHistory.length) {
     section.append(createElement('p', {
       className: 'empty-state',
-      text: '아직 표시할 리뷰 로그가 없습니다.',
+      text: 'Kick으로 작업을 시작하면 여기에 히스토리가 쌓입니다.',
     }));
     container.append(section);
     return;
   }
 
-  const list = createElement('div', { className: 'review-list' });
+  const list = createElement('div', { className: 'history-list' });
 
-  reviews.forEach((review) => {
-    const details = createElement('details', { className: 'review-item' });
-    const summary = createElement('summary');
-    const name = createElement('span', { className: 'review-name', text: formatReviewName(review.name) });
-    const hint = createElement('span', { className: 'review-hint', text: 'open' });
+  currentHistory.forEach((session) => {
+    const sessionEl = createElement('details', { className: 'history-session' });
+    const summaryEl = createElement('summary', { className: 'session-summary' });
 
-    details.open = openReviews.has(review.name);
-    hint.textContent = details.open ? 'close' : 'open';
-    details.addEventListener('toggle', () => {
-      if (details.open) {
-        openReviews.add(review.name);
-      } else {
-        openReviews.delete(review.name);
-      }
+    summaryEl.append(
+      createElement('span', { className: 'session-time', text: formatSessionTimestamp(session.taskTimestamp) }),
+      createElement('span', { className: 'session-count', text: `${session.reviews.length} reviews` }),
+    );
+    sessionEl.append(summaryEl);
 
-      hint.textContent = details.open ? 'close' : 'open';
-    });
-
-    summary.append(name, hint);
-    details.append(summary);
-
-    if (review.promptSummary) {
-      const activeTab = reviewTabs.get(review.name) || 'output';
-      const tabBar = createElement('div', { className: 'review-tabs' });
-      const outputTab = createElement('button', {
-        className: `review-tab${activeTab === 'output' ? ' review-tab--active' : ''}`,
-        text: 'Output',
-      });
-      const promptTab = createElement('button', {
-        className: `review-tab${activeTab === 'prompt' ? ' review-tab--active' : ''}`,
-        text: 'Prompt',
-      });
-      const outputContent = createElement('pre', { text: review.content || '(empty)' });
-      const promptContent = createElement('pre', { text: review.promptSummary });
-
-      outputTab.type = 'button';
-      promptTab.type = 'button';
-
-      if (activeTab !== 'output') outputContent.style.display = 'none';
-      if (activeTab !== 'prompt') promptContent.style.display = 'none';
-
-      outputTab.addEventListener('click', () => {
-        reviewTabs.set(review.name, 'output');
-        outputContent.style.display = '';
-        promptContent.style.display = 'none';
-        outputTab.classList.add('review-tab--active');
-        promptTab.classList.remove('review-tab--active');
-      });
-
-      promptTab.addEventListener('click', () => {
-        reviewTabs.set(review.name, 'prompt');
-        outputContent.style.display = 'none';
-        promptContent.style.display = '';
-        outputTab.classList.remove('review-tab--active');
-        promptTab.classList.add('review-tab--active');
-      });
-
-      tabBar.append(outputTab, promptTab);
-      details.append(tabBar, outputContent, promptContent);
-    } else {
-      details.append(createElement('pre', { text: review.content || '(empty)' }));
+    if (session.taskContent) {
+      const taskBlock = createElement('div', { className: 'session-task' });
+      taskBlock.append(
+        createElement('div', { className: 'session-task__label', text: 'Task' }),
+        createElement('pre', { className: 'session-task__content', text: session.taskContent }),
+      );
+      sessionEl.append(taskBlock);
     }
 
-    list.append(details);
+    if (session.reviews.length) {
+      const reviewList = createElement('div', { className: 'session-reviews' });
+      session.reviews.forEach((review) => reviewList.append(buildReviewItem(review)));
+      sessionEl.append(reviewList);
+    }
+
+    list.append(sessionEl);
   });
 
   section.append(list);
@@ -480,27 +550,38 @@ function renderLastRound(container, state) {
   container.append(panel);
 }
 
-function render() {
-  const fragment = document.createDocumentFragment();
-  const shell = createElement('div', { className: 'dashboard-shell' });
+function renderDashboardPage(container) {
   const columns = createElement('div', { className: 'dashboard-columns' });
   const leftCol = createElement('div', { className: 'dashboard-col' });
   const rightCol = createElement('div', { className: 'dashboard-col' });
 
-  renderHeader(shell, currentState);
+  renderHeader(container, currentState);
 
   renderKickPanel(leftCol, currentState);
   renderFeedbackPanel(leftCol, currentState);
   renderChecklist(leftCol, currentState);
 
+  renderCurrentTask(rightCol, currentState);
   renderProgress(rightCol, currentState);
   renderMetrics(rightCol, currentState);
   renderLastRound(rightCol, currentState);
-  renderReviews(rightCol, currentReviews);
 
   columns.append(leftCol, rightCol);
-  shell.append(columns);
-  renderError(shell);
+  container.append(columns);
+  renderError(container);
+}
+
+function render() {
+  const fragment = document.createDocumentFragment();
+  const shell = createElement('div', { className: 'dashboard-shell' });
+
+  renderNav(shell);
+
+  if (currentPage === 'history') {
+    renderHistoryPage(shell);
+  } else {
+    renderDashboardPage(shell);
+  }
 
   fragment.append(shell);
   app.replaceChildren(fragment);
@@ -614,13 +695,12 @@ async function sendFeedback() {
 
 async function refreshDashboard() {
   try {
-    const [state, reviews] = await Promise.all([
-      fetchJson('/api/state'),
-      fetchJson('/api/reviews'),
-    ]);
+    const promises = [fetchJson('/api/state')];
+    if (currentPage === 'history') promises.push(fetchJson('/api/history'));
 
+    const [state, history] = await Promise.all(promises);
     currentState = state;
-    currentReviews = Array.isArray(reviews) ? reviews : [];
+    if (history !== undefined) currentHistory = Array.isArray(history) ? history : [];
     loadError = null;
   } catch (error) {
     loadError = error instanceof Error ? error.message : 'unknown error';
@@ -660,6 +740,129 @@ function injectStyles() {
       display: grid;
       gap: 18px;
       color: var(--text-base);
+    }
+
+    .main-nav {
+      display: flex;
+      gap: 0;
+      border: 1px solid var(--border-soft);
+      background: var(--panel-bg);
+      width: fit-content;
+    }
+
+    .nav-link {
+      display: block;
+      padding: 10px 20px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-right: 1px solid var(--border-soft);
+    }
+
+    .nav-link:last-child {
+      border-right: none;
+    }
+
+    .nav-link:hover {
+      color: var(--text-base);
+      background: var(--bg-wash);
+    }
+
+    .nav-link--active {
+      color: var(--accent-strong);
+      background: var(--bg-wash);
+    }
+
+    .current-task-panel {
+      border: 1px solid var(--border-soft);
+      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
+      box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .current-task-panel pre {
+      border-top: 1px solid var(--border-soft);
+      max-height: 160px;
+    }
+
+    .history-panel {
+      border: 1px solid var(--border-soft);
+      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
+      box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
+      padding: 18px;
+    }
+
+    .history-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .history-session {
+      border: 1px solid var(--border-soft);
+      background: var(--input-bg);
+    }
+
+    .session-summary {
+      min-height: 48px;
+      padding: 12px 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      list-style: none;
+    }
+
+    .session-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .session-time {
+      color: var(--text-strong);
+      font-weight: 700;
+    }
+
+    .session-count {
+      color: var(--accent);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .session-task {
+      border-top: 1px solid var(--border-soft);
+      padding: 14px;
+      background: var(--bg-wash);
+    }
+
+    .session-task__label {
+      color: var(--accent);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+    }
+
+    .session-task__content {
+      margin: 0;
+      border: none;
+      padding: 0;
+      background: transparent;
+      max-height: 120px;
+      color: var(--text-base);
+    }
+
+    .session-reviews {
+      border-top: 1px solid var(--border-soft);
+      padding: 12px;
+      display: grid;
+      gap: 8px;
     }
 
     .dashboard-columns {
@@ -1136,6 +1339,11 @@ function injectStyles() {
   `;
   document.head.append(style);
 }
+
+window.addEventListener('hashchange', () => {
+  currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
+  refreshDashboard();
+});
 
 injectStyles();
 render();
