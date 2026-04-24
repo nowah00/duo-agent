@@ -63,8 +63,17 @@ function ensureDirs() {
 }
 
 function log(message) {
-  const time = new Date().toLocaleTimeString('ko-KR');
+  const time = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   console.log(`[${time}] ${message}`);
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min === 0) return `${sec}초`;
+  if (sec === 0) return `${min}분`;
+  return `${min}분 ${sec}초`;
 }
 
 function readState() {
@@ -209,7 +218,7 @@ function runAgent(agentName, reason) {
   let output = '';
 
   const timeoutId = setTimeout(() => {
-    log(`${agent.label} 시간 초과 (${CONFIG.agentTimeoutMs / 1000}초) — 강제 종료`);
+    log(`${agent.label} 시간 초과 (${formatDuration(CONFIG.agentTimeoutMs)}) — 강제 종료`);
     child.kill();
   }, CONFIG.agentTimeoutMs);
 
@@ -252,7 +261,7 @@ function runAgent(agentName, reason) {
         `Round: ${latestState.round}/${CONFIG.maxRounds}`,
         `Exit code: ${code}`,
         `Changed source: ${changed ? 'yes' : 'no'}`,
-        `Completed at: ${new Date().toISOString()}`,
+        `Completed at: ${new Date().toLocaleString('ko-KR')}`,
         '',
         '사용자가 최종 확인할 단계입니다.',
       ].join('\n');

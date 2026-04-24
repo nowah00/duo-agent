@@ -54,10 +54,42 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
 
+  const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+
+  if (diffSec < 10) return '방금';
+  if (diffSec < 60) return `${diffSec}초 전`;
+
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}분 전`;
+
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}시간 전`;
+
   return new Intl.DateTimeFormat('ko-KR', {
     dateStyle: 'medium',
-    timeStyle: 'medium',
+    timeStyle: 'short',
   }).format(date);
+}
+
+function formatReviewName(filename) {
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-\d+Z_(\w+)\.md$/);
+  if (!match) return filename;
+
+  const [, datePart, hh, mm, ss, agent] = match;
+  const date = new Date(`${datePart}T${hh}:${mm}:${ss}Z`);
+  if (Number.isNaN(date.getTime())) return filename;
+
+  const agentLabel = AGENT_LABELS[agent] || agent;
+  const isToday = new Date().toDateString() === date.toDateString();
+
+  const timeStr = new Intl.DateTimeFormat('ko-KR', {
+    ...(isToday ? {} : { month: 'numeric', day: 'numeric' }),
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date);
+
+  return `${timeStr} · ${agentLabel}`;
 }
 
 function getStatus(state) {
@@ -290,7 +322,7 @@ function renderReviews(container, reviews) {
   reviews.forEach((review) => {
     const details = createElement('details', { className: 'review-item' });
     const summary = createElement('summary');
-    const name = createElement('span', { className: 'review-name', text: review.name });
+    const name = createElement('span', { className: 'review-name', text: formatReviewName(review.name) });
     const hint = createElement('span', { className: 'review-hint', text: 'open' });
     const content = createElement('pre', { text: review.content || '(empty)' });
 
