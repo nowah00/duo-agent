@@ -1,12 +1,5 @@
 const POLL_INTERVAL_MS = 2000;
-const STATUS_LABELS = {
-  idle: 'idle',
-  running: 'running',
-  complete: 'complete',
-  error: 'error',
-  paused: 'paused',
-};
-const STATUS_CLASSES = new Set(Object.keys(STATUS_LABELS));
+const STATUS_CLASSES = new Set(['idle', 'running', 'complete', 'error', 'paused']);
 const AGENT_LABELS = {
   codex: 'Codex',
   claude: 'Claude Code',
@@ -27,7 +20,9 @@ let currentState = {
   lastChangedFiles: [],
   hasPendingFeedback: false,
   currentTask: null,
+  checklist: [],
 };
+let currentReviews = [];
 let currentHistory = [];
 let currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
 let loadError = null;
@@ -45,13 +40,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function getStatus(state) {
+  const status = state.status || 'idle';
+  return STATUS_CLASSES.has(status) ? status : 'idle';
+}
+
 function formatAgent(agent) {
   const normalizedAgent = String(agent || '').toLowerCase().replace(/\s+/g, '-');
-
-  if (normalizedAgent === 'claude-code') {
-    return AGENT_LABELS.claude;
-  }
-
+  if (normalizedAgent === 'claude-code') return AGENT_LABELS.claude;
   return AGENT_LABELS[normalizedAgent] || '대기 중';
 }
 
@@ -62,8 +58,7 @@ function formatDate(value) {
   if (Number.isNaN(date.getTime())) return value;
 
   const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
-
-  if (diffSec < 10) return '방금';
+  if (diffSec < 10) return '방금 전';
   if (diffSec < 60) return `${diffSec}초 전`;
 
   const diffMin = Math.floor(diffSec / 60);
@@ -79,24 +74,18 @@ function formatDate(value) {
 }
 
 function formatReviewName(filename) {
-  const match = filename.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-\d+Z_(\w+)\.md$/);
-  if (!match) return filename;
+  const parsed = parseReviewMeta(filename);
+  if (!parsed.createdAt) return filename;
 
-  const [, datePart, hh, mm, ss, agent] = match;
-  const date = new Date(`${datePart}T${hh}:${mm}:${ss}Z`);
-  if (Number.isNaN(date.getTime())) return filename;
-
-  const agentLabel = AGENT_LABELS[agent] || agent;
-  const isToday = new Date().toDateString() === date.toDateString();
-
-  const timeStr = new Intl.DateTimeFormat('ko-KR', {
+  const isToday = new Date().toDateString() === parsed.createdAt.toDateString();
+  const timeLabel = new Intl.DateTimeFormat('ko-KR', {
     ...(isToday ? {} : { month: 'numeric', day: 'numeric' }),
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
-  }).format(date);
+  }).format(parsed.createdAt);
 
-  return `${timeStr} · ${agentLabel}`;
+  return `${timeLabel} · ${parsed.agentLabel}`;
 }
 
 function formatSessionTimestamp(ms) {
@@ -104,6 +93,7 @@ function formatSessionTimestamp(ms) {
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return '-';
   const isToday = new Date().toDateString() === date.toDateString();
+
   return new Intl.DateTimeFormat('ko-KR', {
     ...(isToday ? {} : { month: 'numeric', day: 'numeric' }),
     hour: '2-digit',
@@ -112,21 +102,277 @@ function formatSessionTimestamp(ms) {
   }).format(date);
 }
 
-function getStatus(state) {
-  const status = state.status || 'idle';
-  return STATUS_CLASSES.has(status) ? status : 'idle';
+function parseReviewMeta(filename, content = '') {
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z_(.+)\.md$/);
+  let createdAt = null;
+  let agent = null;
+
+  if (match) {
+    const [, datePart, hh, mm, ss, ms, agentPart] = match;
+    createdAt = new Date(`${datePart}T${hh}:${mm}:${ss}.${ms}Z`);
+    agent = agentPart;
+  }
+
+  const normalizedAgent = String(agent || '')
+    .replace(/_prompt$/, '')
+    .replace(/_task$/, '')
+    .toLowerCase();
+  const agentLabel = normalizedAgent === 'task'
+    ? '작업 요청'
+    : formatAgent(normalizedAgent);
+  const hasComplete = /STATUS:\s*COMPLETE/i.test(content) || /"status"\s*:\s*"COMPLETE"/i.test(content);
+  const hasNeedsNext = /STATUS:\s*NEEDS_NEXT/i.test(content) || /"status"\s*:\s*"NEEDS_NEXT"/i.test(content);
+
+  let typeLabel = '검토 로그';
+  if (normalizedAgent === 'task') typeLabel = '작업 요청';
+  else if (hasComplete) typeLabel = '완료';
+  else if (hasNeedsNext) typeLabel = '후속 작업 필요';
+  else if (normalizedAgent === 'codex') typeLabel = '구현 결과';
+  else if (normalizedAgent === 'claude') typeLabel = '검토 결과';
+
+  return {
+    createdAt: createdAt instanceof Date && !Number.isNaN(createdAt.getTime()) ? createdAt : null,
+    agent: normalizedAgent || null,
+    agentLabel,
+    hasComplete,
+    hasNeedsNext,
+    typeLabel,
+  };
+}
+
+function summarizeTask(task) {
+  if (!task) return '현재 작업 정보가 없습니다.';
+
+  const goalLine = task
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => /^goal:/i.test(line));
+
+  if (goalLine) return goalLine.replace(/^goal:\s*/i, '').trim();
+
+  return task.split('\n')[0].trim() || '현재 작업 정보가 없습니다.';
+}
+
+function getUserFacingErrorMessage(message) {
+  const text = String(message || '').trim();
+  if (!text) return '요청 처리 중 문제가 발생했습니다.';
+
+  const lower = text.toLowerCase();
+  if (lower.includes('/api/kick')) return '작업 시작 요청을 처리하지 못했습니다. 입력 내용을 확인해 주세요.';
+  if (lower.includes('/api/stop')) return '작업 중단 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  if (lower.includes('/api/feedback')) return '피드백 전달에 실패했습니다. 잠시 후 다시 시도해 주세요.';
+  if (lower.includes('task is required')) return '작업 목표를 먼저 입력해 주세요.';
+  if (lower.includes('feedback is required')) return '전달할 피드백 내용을 입력해 주세요.';
+  if (lower.includes('spawn') || lower.includes('eperm')) return '실행 환경 권한 문제로 작업을 진행하지 못했습니다.';
+  if (lower.includes('exit')) return '에이전트 실행이 비정상 종료되었습니다. 설정과 로그를 확인해 주세요.';
+
+  return text;
+}
+
+function mapStatus(state) {
+  const status = getStatus(state);
+  const agent = String(state.lastAgent || '').toLowerCase();
+  const reason = String(state.lastReason || '').toLowerCase();
+
+  if (status === 'running' && agent === 'codex') {
+    return {
+      badgeClass: 'running',
+      badgeText: '구현 중',
+      title: 'Codex가 구현 중입니다',
+      description: '요청한 기능을 코드로 반영하고 있습니다.',
+      nextAction: '작업이 끝날 때까지 기다려 주세요.',
+    };
+  }
+
+  if (status === 'running' && agent === 'claude') {
+    return {
+      badgeClass: 'running',
+      badgeText: '검토 중',
+      title: 'Claude Code가 검토 중입니다',
+      description: '구현 결과를 확인하고 다음 라운드를 판단하고 있습니다.',
+      nextAction: '검토가 끝나면 결과 요약이 갱신됩니다.',
+    };
+  }
+
+  if (status === 'complete') {
+    return {
+      badgeClass: 'complete',
+      badgeText: '완료',
+      title: '작업이 완료되었습니다',
+      description: '구현과 검토가 모두 끝났습니다.',
+      nextAction: '결과를 확인하고 다음 작업을 요청할 수 있습니다.',
+    };
+  }
+
+  if (status === 'error') {
+    return {
+      badgeClass: 'error',
+      badgeText: '오류',
+      title: '실행 중 오류가 발생했습니다',
+      description: 'CLI 설정이나 실행 환경을 확인해야 합니다.',
+      nextAction: '오류 내용을 확인한 뒤 다시 시작해 주세요.',
+    };
+  }
+
+  if (status === 'paused' && reason.includes('user stopped')) {
+    return {
+      badgeClass: 'paused',
+      badgeText: '중단됨',
+      title: '사용자가 작업을 중단했습니다',
+      description: '즉시 강제 종료가 아니라 현재 라운드를 마무리한 뒤 자동 진행을 멈춘 상태입니다.',
+      nextAction: '필요하면 같은 요청으로 다시 시작할 수 있습니다.',
+    };
+  }
+
+  if (status === 'paused' && reason.includes('max rounds reached')) {
+    return {
+      badgeClass: 'paused',
+      badgeText: '확인 필요',
+      title: '검토 라운드 제한에 도달했습니다',
+      description: '자동 진행이 멈췄습니다.',
+      nextAction: '검토 결과를 확인하고 요청을 보완해 다시 시작해 주세요.',
+    };
+  }
+
+  if (status === 'paused' && reason.includes('no changes and no needs_next')) {
+    return {
+      badgeClass: 'paused',
+      badgeText: '확인 필요',
+      title: '자동 진행 판단이 멈췄습니다',
+      description: '추가 변경이나 후속 지시가 필요합니다.',
+      nextAction: '검토 결과를 확인하고 필요한 피드백을 전달해 주세요.',
+    };
+  }
+
+  return {
+    badgeClass: status,
+    badgeText: '대기 중',
+    title: '새 작업을 요청할 수 있습니다',
+    description: '현재 실행 중인 작업이 없습니다.',
+    nextAction: '작업 요청을 입력하면 자동으로 구현과 검토를 시작합니다.',
+  };
+}
+
+function summarizeHistorySession(session) {
+  const reviews = Array.isArray(session.reviews) ? session.reviews : [];
+  const latest = reviews[0] || null;
+
+  if (!latest) {
+    return {
+      badgeText: '기록만 있음',
+      badgeClass: 'paused',
+      summary: summarizeTask(session.taskContent),
+    };
+  }
+
+  const meta = parseReviewMeta(latest.name, latest.content);
+  if (meta.hasComplete) {
+    return {
+      badgeText: '완료',
+      badgeClass: 'complete',
+      summary: `${meta.agentLabel}가 완료 신호를 남겼습니다.`,
+    };
+  }
+
+  if (meta.hasNeedsNext) {
+    return {
+      badgeText: '후속 필요',
+      badgeClass: 'paused',
+      summary: `${meta.agentLabel}가 후속 작업이 필요하다고 남겼습니다.`,
+    };
+  }
+
+  if (meta.agent === 'claude') {
+    return {
+      badgeText: '검토 기록',
+      badgeClass: 'running',
+      summary: 'Claude Code의 최근 검토 로그가 남아 있습니다.',
+    };
+  }
+
+  if (meta.agent === 'codex') {
+    return {
+      badgeText: '구현 기록',
+      badgeClass: 'running',
+      summary: 'Codex의 구현 로그가 남아 있습니다.',
+    };
+  }
+
+  return {
+    badgeText: meta.typeLabel,
+    badgeClass: 'paused',
+    summary: summarizeTask(session.taskContent),
+  };
+}
+
+function summarizeResult(state, reviews) {
+  const latestReview = reviews[0] || null;
+  const hasFiles = Array.isArray(state.lastChangedFiles) && state.lastChangedFiles.length > 0;
+  const changedSummary = hasFiles
+    ? `${state.lastChangedFiles.length}개 파일 변경`
+    : '변경 파일 없음';
+
+  if (state.status === 'complete') {
+    return {
+      title: '최근 결과 요약',
+      summary: state.lastSummary || '마지막 라운드가 완료로 판정되었습니다.',
+      changedText: changedSummary,
+      decisionText: '현재 판단: 작업 완료',
+      nextAction: '결과를 검토한 뒤 다음 작업을 요청할 수 있습니다.',
+    };
+  }
+
+  if (latestReview) {
+    const meta = parseReviewMeta(latestReview.name, latestReview.content);
+    const baseSummary = state.lastSummary || `${meta.agentLabel}의 ${meta.typeLabel.toLowerCase()}가 기록되었습니다.`;
+    const decisionText = meta.hasComplete
+      ? '현재 판단: 완료 신호 감지'
+      : meta.hasNeedsNext
+        ? '현재 판단: 후속 작업 필요'
+        : `현재 판단: ${meta.typeLabel}`;
+
+    return {
+      title: '최근 결과 요약',
+      summary: baseSummary,
+      changedText: changedSummary,
+      decisionText,
+      nextAction: state.status === 'running'
+        ? '다음 라운드가 진행 중입니다.'
+        : mapStatus(state).nextAction,
+    };
+  }
+
+  return {
+    title: '최근 결과 요약',
+    summary: '아직 표시할 검토 결과가 없습니다.',
+    changedText: changedSummary,
+    decisionText: '현재 판단: 대기 중',
+    nextAction: '작업을 시작하면 최근 결과가 여기에 표시됩니다.',
+  };
+}
+
+function deriveViewModel(state, reviews) {
+  const statusView = mapStatus(state);
+  const round = Number(state.round || 0);
+  const maxRounds = Math.max(Number(state.maxRounds || 8), 1);
+  const percent = clamp((round / maxRounds) * 100, 0, 100);
+
+  return {
+    status: statusView,
+    taskSummary: summarizeTask(state.currentTask),
+    roundLabel: `${round} / ${maxRounds} 라운드`,
+    progressPercent: percent,
+    updatedAtText: formatDate(state.updatedAt),
+    agentText: formatAgent(state.lastAgent),
+    result: summarizeResult(state, reviews),
+  };
 }
 
 function createElement(tagName, options = {}) {
   const element = document.createElement(tagName);
 
-  if (options.className) {
-    element.className = options.className;
-  }
-
-  if (options.text !== undefined) {
-    element.textContent = options.text;
-  }
+  if (options.className) element.className = options.className;
+  if (options.text !== undefined) element.textContent = options.text;
 
   return element;
 }
@@ -137,19 +383,34 @@ function createMetric(label, value) {
     createElement('span', { className: 'metric__label', text: label }),
     createElement('strong', { className: 'metric__value', text: value }),
   );
-
   return metric;
 }
 
-function renderHeader(container, state) {
-  const status = getStatus(state);
+function renderNav(container) {
+  const nav = createElement('nav', { className: 'main-nav' });
+  const dashboardLink = createElement('a', {
+    className: `nav-link${currentPage === 'dashboard' ? ' nav-link--active' : ''}`,
+    text: '대시보드',
+  });
+  const historyLink = createElement('a', {
+    className: `nav-link${currentPage === 'history' ? ' nav-link--active' : ''}`,
+    text: '작업 기록',
+  });
+
+  dashboardLink.href = '#';
+  historyLink.href = '#history';
+  nav.append(dashboardLink, historyLink);
+  container.append(nav);
+}
+
+function renderHeader(container, viewModel) {
   const header = createElement('header', { className: 'dashboard-header' });
   const titleGroup = createElement('div', { className: 'title-group' });
   const prompt = createElement('span', { className: 'prompt', text: 'duo-agent@monitor:~$' });
-  const title = createElement('h1', { text: 'Monitoring Dashboard' });
+  const title = createElement('h1', { text: '작업 진행 현황' });
   const badge = createElement('span', {
-    className: `status-badge status-badge--${status}`,
-    text: STATUS_LABELS[status],
+    className: `status-badge status-badge--${viewModel.status.badgeClass}`,
+    text: viewModel.status.badgeText,
   });
 
   titleGroup.append(prompt, title);
@@ -157,37 +418,78 @@ function renderHeader(container, state) {
   container.append(header);
 }
 
-function renderProgress(container, state) {
-  const round = Number(state.round || 0);
-  const maxRounds = Math.max(Number(state.maxRounds || 8), 1);
-  const percent = clamp((round / maxRounds) * 100, 0, 100);
-  const progressSection = createElement('section', { className: 'progress-panel' });
-  const progressHeader = createElement('div', { className: 'progress-header' });
-  const progressTrack = createElement('div', { className: 'progress-track' });
-  const progressFill = createElement('div', { className: 'progress-fill' });
+function renderStatusSummary(container, state, viewModel) {
+  const panel = createElement('section', { className: 'summary-panel' });
+  const body = createElement('div', { className: 'summary-panel__body' });
+  const meta = createElement('div', { className: 'metrics-grid' });
 
-  progressHeader.append(
-    createElement('span', { text: 'round progress' }),
-    createElement('strong', { text: `${round} / ${maxRounds}` }),
+  body.append(
+    createElement('p', { className: 'summary-eyebrow', text: '현재 상태' }),
+    createElement('h2', { text: viewModel.status.title }),
+    createElement('p', { className: 'summary-description', text: viewModel.status.description }),
+    createElement('p', { className: 'summary-next-action', text: viewModel.status.nextAction }),
   );
 
-  progressFill.style.width = `${percent}%`;
-  progressFill.setAttribute('aria-label', `round progress ${Math.round(percent)}%`);
-  progressTrack.append(progressFill);
-  progressSection.append(progressHeader, progressTrack);
-  container.append(progressSection);
+  meta.append(
+    createMetric('현재 담당', viewModel.agentText),
+    createMetric('마지막 업데이트', viewModel.updatedAtText),
+    createMetric('현재 작업 요약', viewModel.taskSummary),
+  );
+
+  panel.append(body, meta);
+
+  if (state.currentTask) {
+    const taskPreview = createElement('div', { className: 'task-preview' });
+    taskPreview.append(
+      createElement('span', { className: 'task-preview__label', text: '현재 요청' }),
+      createElement('pre', { className: 'task-preview__content', text: state.currentTask }),
+    );
+    panel.append(taskPreview);
+  }
+
+  container.append(panel);
 }
 
-function renderMetrics(container, state) {
-  const metrics = createElement('div', { className: 'metrics-grid' });
+function renderProgress(container, viewModel) {
+  const section = createElement('section', { className: 'progress-panel' });
+  const header = createElement('div', { className: 'progress-header' });
+  const helper = createElement('p', {
+    className: 'progress-helper',
+    text: '이 작업은 구현과 검토를 번갈아 진행합니다.',
+  });
+  const track = createElement('div', { className: 'progress-track' });
+  const fill = createElement('div', { className: 'progress-fill' });
 
-  metrics.append(
-    createMetric('active agent', formatAgent(state.lastAgent)),
-    createMetric('last trigger', state.lastReason || '-'),
-    createMetric('updated at', formatDate(state.updatedAt)),
+  header.append(
+    createElement('span', { text: '검토 라운드' }),
+    createElement('strong', { text: viewModel.roundLabel }),
   );
 
-  container.append(metrics);
+  fill.style.width = `${viewModel.progressPercent}%`;
+  fill.setAttribute('aria-label', `검토 라운드 ${Math.round(viewModel.progressPercent)}%`);
+  track.append(fill);
+  section.append(header, helper, track);
+  container.append(section);
+}
+
+function renderResultSummary(container, viewModel) {
+  const panel = createElement('section', { className: 'result-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const result = viewModel.result;
+
+  header.append(
+    createElement('h2', { text: result.title }),
+    createElement('span', { text: result.changedText }),
+  );
+
+  panel.append(
+    header,
+    createElement('p', { className: 'result-summary', text: result.summary }),
+    createElement('p', { className: 'result-decision', text: result.decisionText }),
+    createElement('p', { className: 'result-next-action', text: result.nextAction }),
+  );
+
+  container.append(panel);
 }
 
 function renderKickPanel(container, state) {
@@ -196,7 +498,7 @@ function renderKickPanel(container, state) {
   const header = createElement('div', { className: 'section-header' });
   const form = createElement('form', { className: 'kick-form' });
   const goalField = createElement('label', { className: 'form-field' });
-  const goalLabel = createElement('span', { className: 'form-field__label', text: '목표' });
+  const goalLabel = createElement('span', { className: 'form-field__label', text: '무엇을 만들거나 수정할지' });
   const goalInput = createElement('textarea', { className: 'form-textarea' });
   const stackField = createElement('label', { className: 'form-field' });
   const stackLabel = createElement('span', { className: 'form-field__label', text: '기술 스택' });
@@ -204,14 +506,21 @@ function renderKickPanel(container, state) {
   const rulesField = createElement('label', { className: 'form-field' });
   const rulesLabel = createElement('span', { className: 'form-field__label', text: '제약 조건' });
   const rulesInput = createElement('textarea', { className: 'form-textarea' });
+  const checklistField = createElement('div', { className: 'form-field' });
+  const checklistLabel = createElement('span', { className: 'form-field__label', text: '완료 기준 체크리스트' });
+  const checklistHelp = createElement('p', {
+    className: 'form-help',
+    text: '완료로 보기 전에 확인할 항목을 적어둘 수 있습니다.',
+  });
+  const checklistItems = createElement('div', { className: 'checklist-inputs' });
   const actions = createElement('div', { className: 'control-actions' });
   const kickButton = createElement('button', {
     className: 'control-button control-button--kick',
-    text: pendingAction === 'kick' ? '...' : '▶ Kick',
+    text: pendingAction === 'kick' ? '시작 중...' : '작업 시작',
   });
   const stopButton = createElement('button', {
     className: 'control-button control-button--stop',
-    text: pendingAction === 'stop' ? 'Stopping...' : '■ Stop',
+    text: pendingAction === 'stop' ? '중단 중...' : '작업 중단',
   });
   const isRunning = status === 'running';
   const isBusy = Boolean(pendingAction);
@@ -219,13 +528,13 @@ function renderKickPanel(container, state) {
   const hasGoal = kickForm.goal.trim().length > 0;
 
   header.append(
-    createElement('h2', { text: 'New Task' }),
-    createElement('span', { text: isRunning ? 'agent running' : status }),
+    createElement('h2', { text: '작업 요청' }),
+    createElement('span', { text: isRunning ? '현재 작업 진행 중' : '새 작업 입력 가능' }),
   );
 
   goalInput.name = 'goal';
   goalInput.rows = 5;
-  goalInput.placeholder = '무엇을 만들거나 수정할지 구체적으로 적어주세요.';
+  goalInput.placeholder = '예: 사용자 프로필 수정 화면을 만들고 저장 API와 연결해 주세요';
   goalInput.value = kickForm.goal;
   goalInput.disabled = isFormDisabled;
   goalInput.addEventListener('input', (event) => {
@@ -246,13 +555,53 @@ function renderKickPanel(container, state) {
 
   rulesInput.name = 'rules';
   rulesInput.rows = 4;
-  rulesInput.placeholder = '예: 테스트 필수, REST API, 기존 코드 유지';
+  rulesInput.placeholder = '예: 기존 API 유지, 테스트 포함, 모바일 대응';
   rulesInput.value = kickForm.rules;
   rulesInput.disabled = isFormDisabled;
   rulesInput.addEventListener('input', (event) => {
     kickForm.rules = event.target.value;
   });
   rulesField.append(rulesLabel, rulesInput);
+
+  kickForm.checklist.forEach((item, index) => {
+    const row = createElement('div', { className: 'checklist-row' });
+    const input = createElement('input', { className: 'form-input' });
+    const removeButton = createElement('button', {
+      className: 'checklist-remove-btn',
+      text: '삭제',
+    });
+
+    input.type = 'text';
+    input.value = item;
+    input.placeholder = `체크 항목 ${index + 1}`;
+    input.disabled = isFormDisabled;
+    input.addEventListener('input', (event) => {
+      kickForm.checklist[index] = event.target.value;
+    });
+
+    removeButton.type = 'button';
+    removeButton.disabled = isFormDisabled;
+    removeButton.addEventListener('click', () => {
+      kickForm.checklist.splice(index, 1);
+      render();
+    });
+
+    row.append(input, removeButton);
+    checklistItems.append(row);
+  });
+
+  const addItemButton = createElement('button', {
+    className: 'checklist-add-btn',
+    text: '+ 체크 항목 추가',
+  });
+  addItemButton.type = 'button';
+  addItemButton.disabled = isFormDisabled;
+  addItemButton.addEventListener('click', () => {
+    kickForm.checklist.push('');
+    render();
+  });
+
+  checklistField.append(checklistLabel, checklistHelp, checklistItems, addItemButton);
 
   kickButton.type = 'submit';
   kickButton.disabled = !hasGoal || isFormDisabled;
@@ -265,48 +614,23 @@ function renderKickPanel(container, state) {
 
   actions.append(kickButton, stopButton);
 
-  const checklistField = createElement('div', { className: 'form-field' });
-  const checklistLabel = createElement('span', { className: 'form-field__label', text: '완료 체크리스트 (선택)' });
-  const checklistItems = createElement('div', { className: 'checklist-inputs' });
-
-  kickForm.checklist.forEach((item, index) => {
-    const row = createElement('div', { className: 'checklist-row' });
-    const input = createElement('input', { className: 'form-input' });
-    const removeBtn = createElement('button', { className: 'checklist-remove-btn', text: '×' });
-
-    input.type = 'text';
-    input.value = item;
-    input.placeholder = `항목 ${index + 1}`;
-    input.disabled = isFormDisabled;
-    input.addEventListener('input', (e) => { kickForm.checklist[index] = e.target.value; });
-
-    removeBtn.type = 'button';
-    removeBtn.disabled = isFormDisabled;
-    removeBtn.addEventListener('click', () => {
-      kickForm.checklist.splice(index, 1);
-      render();
-    });
-
-    row.append(input, removeBtn);
-    checklistItems.append(row);
-  });
-
-  const addItemBtn = createElement('button', { className: 'checklist-add-btn', text: '+ 항목 추가' });
-  addItemBtn.type = 'button';
-  addItemBtn.disabled = isFormDisabled;
-  addItemBtn.addEventListener('click', () => {
-    kickForm.checklist.push('');
-    render();
-  });
-
-  checklistField.append(checklistLabel, checklistItems, addItemBtn);
-
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     kickAgent();
   });
   form.append(goalField, stackField, rulesField, checklistField, actions);
   panel.append(header, form);
+
+  if (isRunning) {
+    panel.append(createElement('p', {
+      className: 'form-help form-help--notice',
+      text: '작업이 진행 중이라 새 요청 입력이 잠시 비활성화되었습니다.',
+    }));
+    panel.append(createElement('p', {
+      className: 'form-help',
+      text: '중단을 누르면 현재 라운드를 마친 뒤 자동 진행이 멈춥니다.',
+    }));
+  }
 
   if (controlError) {
     panel.append(createElement('p', {
@@ -318,21 +642,67 @@ function renderKickPanel(container, state) {
   container.append(panel);
 }
 
+function renderFeedbackPanel(container, state) {
+  const panel = createElement('section', { className: 'feedback-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const textarea = createElement('textarea', { className: 'form-textarea' });
+  const sendButton = createElement('button', {
+    className: 'control-button control-button--feedback',
+    text: pendingAction === 'feedback' ? '전달 중...' : '피드백 전달',
+  });
+
+  header.append(
+    createElement('h2', { text: '진행 중 피드백' }),
+    createElement('span', {
+      className: state.hasPendingFeedback ? 'feedback-pending-badge' : '',
+      text: state.hasPendingFeedback ? '다음 라운드에 반영 예정' : '즉시 입력 가능',
+    }),
+  );
+
+  textarea.placeholder = '예: 로그인 흐름은 유지하고, 빈 상태 화면 문구만 더 친절하게 바꿔 주세요';
+  textarea.rows = 3;
+  textarea.value = feedbackDraft;
+  textarea.addEventListener('input', (event) => {
+    feedbackDraft = event.target.value;
+    sendButton.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
+  });
+
+  sendButton.type = 'button';
+  sendButton.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
+  sendButton.addEventListener('click', () => sendFeedback());
+
+  panel.append(
+    header,
+    createElement('p', {
+      className: 'form-help',
+      text: '자동 진행 중 방향 수정이 필요하면 다음 라운드에 반영할 내용을 남길 수 있습니다.',
+    }),
+    textarea,
+    sendButton,
+  );
+
+  container.append(panel);
+}
+
 function buildReviewItem(review) {
+  const meta = parseReviewMeta(review.name, review.content);
   const details = createElement('details', { className: 'review-item' });
   const summaryEl = createElement('summary');
+  const summaryLeft = createElement('div', { className: 'review-summary-main' });
   const nameEl = createElement('span', { className: 'review-name', text: formatReviewName(review.name) });
-  const hint = createElement('span', { className: 'review-hint', text: 'open' });
+  const typeEl = createElement('span', { className: 'review-type', text: meta.typeLabel });
+  const hint = createElement('span', { className: 'review-hint', text: '열기' });
 
   details.open = openReviews.has(review.name);
-  hint.textContent = details.open ? 'close' : 'open';
+  hint.textContent = details.open ? '닫기' : '열기';
   details.addEventListener('toggle', () => {
     if (details.open) openReviews.add(review.name);
     else openReviews.delete(review.name);
-    hint.textContent = details.open ? 'close' : 'open';
+    hint.textContent = details.open ? '닫기' : '열기';
   });
 
-  summaryEl.append(nameEl, hint);
+  summaryLeft.append(nameEl, typeEl);
+  summaryEl.append(summaryLeft, hint);
   details.append(summaryEl);
 
   if (review.promptSummary) {
@@ -340,11 +710,11 @@ function buildReviewItem(review) {
     const tabBar = createElement('div', { className: 'review-tabs' });
     const outputTab = createElement('button', {
       className: `review-tab${activeTab === 'output' ? ' review-tab--active' : ''}`,
-      text: 'Output',
+      text: '출력',
     });
     const promptTab = createElement('button', {
       className: `review-tab${activeTab === 'prompt' ? ' review-tab--active' : ''}`,
-      text: 'Prompt',
+      text: '프롬프트',
     });
     const outputContent = createElement('pre', { text: review.content || '(empty)' });
     const promptContent = createElement('pre', { text: review.promptSummary });
@@ -362,6 +732,7 @@ function buildReviewItem(review) {
       outputTab.classList.add('review-tab--active');
       promptTab.classList.remove('review-tab--active');
     });
+
     promptTab.addEventListener('click', () => {
       reviewTabs.set(review.name, 'prompt');
       outputContent.style.display = 'none';
@@ -379,36 +750,64 @@ function buildReviewItem(review) {
   return details;
 }
 
-function renderCurrentTask(container, state) {
-  if (!state.currentTask) return;
-
-  const panel = createElement('section', { className: 'current-task-panel' });
+function renderReviewDetails(container, reviews) {
+  const section = createElement('section', { className: 'reviews-panel' });
   const header = createElement('div', { className: 'section-header' });
-  const statusLabel = getStatus(state) === 'running' ? '실행 중' : '대기';
 
   header.append(
-    createElement('h2', { text: 'Current Task' }),
-    createElement('span', { text: statusLabel }),
+    createElement('h2', { text: '검토 결과 상세' }),
+    createElement('span', { text: `${reviews.length}개` }),
   );
-  panel.append(header, createElement('pre', { text: state.currentTask }));
-  container.append(panel);
+
+  section.append(header);
+
+  if (!reviews.length) {
+    section.append(createElement('p', {
+      className: 'empty-state',
+      text: '아직 표시할 검토 결과가 없습니다.',
+    }));
+    container.append(section);
+    return;
+  }
+
+  const list = createElement('div', { className: 'review-list' });
+  reviews.forEach((review) => {
+    list.append(buildReviewItem(review));
+  });
+
+  section.append(list);
+  container.append(section);
 }
 
-function renderNav(container) {
-  const nav = createElement('nav', { className: 'main-nav' });
-  const dashLink = createElement('a', {
-    className: `nav-link${currentPage === 'dashboard' ? ' nav-link--active' : ''}`,
-    text: 'Dashboard',
-  });
-  const historyLink = createElement('a', {
-    className: `nav-link${currentPage === 'history' ? ' nav-link--active' : ''}`,
-    text: 'History',
+function renderChecklist(container, state) {
+  const items = Array.isArray(state.checklist) ? state.checklist : [];
+  if (!items.length) return;
+
+  const section = createElement('section', { className: 'checklist-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const list = createElement('ol', { className: 'checklist-list' });
+
+  header.append(
+    createElement('h2', { text: '완료 체크리스트' }),
+    createElement('span', { text: `${items.length}개` }),
+  );
+
+  items.forEach((item) => {
+    list.append(createElement('li', {
+      className: 'checklist-list-item',
+      text: item,
+    }));
   });
 
-  dashLink.href = '#';
-  historyLink.href = '#history';
-  nav.append(dashLink, historyLink);
-  container.append(nav);
+  section.append(
+    header,
+    createElement('p', {
+      className: 'form-help',
+      text: '작업 완료 전에 아래 항목을 확인하세요.',
+    }),
+    list,
+  );
+  container.append(section);
 }
 
 function renderHistoryPage(container) {
@@ -416,36 +815,51 @@ function renderHistoryPage(container) {
   const header = createElement('div', { className: 'section-header' });
 
   header.append(
-    createElement('h2', { text: 'History' }),
-    createElement('span', { text: `${currentHistory.length} sessions` }),
+    createElement('h2', { text: '작업 기록' }),
+    createElement('span', { text: `${currentHistory.length}개 세션` }),
   );
   section.append(header);
 
   if (!currentHistory.length) {
     section.append(createElement('p', {
       className: 'empty-state',
-      text: 'Kick으로 작업을 시작하면 여기에 히스토리가 쌓입니다.',
+      text: '작업을 시작하면 여기에 기록이 쌓입니다.',
     }));
     container.append(section);
     return;
   }
 
   const list = createElement('div', { className: 'history-list' });
-
   currentHistory.forEach((session) => {
+    const sessionSummary = summarizeHistorySession(session);
     const sessionEl = createElement('details', { className: 'history-session' });
     const summaryEl = createElement('summary', { className: 'session-summary' });
+    const taskSummary = summarizeTask(session.taskContent);
+    const summaryMain = createElement('div', { className: 'session-summary-main' });
+    const badge = createElement('span', {
+      className: `inline-badge inline-badge--${sessionSummary.badgeClass}`,
+      text: sessionSummary.badgeText,
+    });
 
-    summaryEl.append(
+    summaryMain.append(
       createElement('span', { className: 'session-time', text: formatSessionTimestamp(session.taskTimestamp) }),
-      createElement('span', { className: 'session-count', text: `${session.reviews.length} reviews` }),
+      createElement('span', { className: 'session-summary-text', text: sessionSummary.summary }),
+    );
+    summaryEl.append(
+      summaryMain,
+      createElement('div', { className: 'session-summary-meta' }),
+    );
+    summaryEl.lastChild.append(
+      badge,
+      createElement('span', { className: 'session-count', text: `${session.reviews.length}개 로그` }),
     );
     sessionEl.append(summaryEl);
 
     if (session.taskContent) {
       const taskBlock = createElement('div', { className: 'session-task' });
       taskBlock.append(
-        createElement('div', { className: 'session-task__label', text: 'Task' }),
+        createElement('div', { className: 'session-task__label', text: '요청 요약' }),
+        createElement('p', { className: 'session-task__summary', text: taskSummary }),
         createElement('pre', { className: 'session-task__content', text: session.taskContent }),
       );
       sessionEl.append(taskBlock);
@@ -464,109 +878,33 @@ function renderHistoryPage(container) {
   container.append(section);
 }
 
-function renderChecklist(container, state) {
-  const items = Array.isArray(state.checklist) ? state.checklist : [];
-  if (!items.length) return;
-
-  const section = createElement('section', { className: 'checklist-panel' });
-  const header = createElement('div', { className: 'section-header' });
-  header.append(
-    createElement('h2', { text: '완료 체크리스트' }),
-    createElement('span', { text: `${items.length}개 항목` }),
-  );
-
-  const list = createElement('ol', { className: 'checklist-list' });
-  items.forEach((item) => {
-    list.append(createElement('li', { className: 'checklist-list-item', text: item }));
-  });
-
-  section.append(header, list);
-  container.append(section);
-}
-
 function renderError(container) {
   if (!loadError) return;
 
   container.append(createElement('p', {
     className: 'load-error',
-    text: `API 연결 오류: ${loadError}`,
+    text: `데이터를 불러오는 중 문제가 발생했습니다: ${getUserFacingErrorMessage(loadError)}`,
   }));
 }
 
-function renderFeedbackPanel(container, state) {
-  const panel = createElement('section', { className: 'feedback-panel' });
-  const header = createElement('div', { className: 'section-header' });
-  const statusText = state.hasPendingFeedback ? '대기 중 — 다음 라운드에 전달됩니다' : '전송 가능';
-
-  header.append(
-    createElement('h2', { text: 'Mid-run Feedback' }),
-    createElement('span', { className: state.hasPendingFeedback ? 'feedback-pending-badge' : '', text: statusText }),
-  );
-
-  const textarea = createElement('textarea', { className: 'form-textarea' });
-  textarea.placeholder = '실행 중 방향을 바꾸고 싶을 때 입력하세요. 다음 라운드 시작 시 에이전트에게 전달됩니다.';
-  textarea.value = feedbackDraft;
-  textarea.rows = 3;
-  textarea.addEventListener('input', (e) => {
-    feedbackDraft = e.target.value;
-    sendBtn.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
-  });
-
-  const sendBtn = createElement('button', {
-    className: 'control-button control-button--feedback',
-    text: pendingAction === 'feedback' ? '전송 중...' : '↑ 전달',
-  });
-  sendBtn.type = 'button';
-  sendBtn.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
-  sendBtn.addEventListener('click', () => sendFeedback());
-
-  panel.append(header, textarea, sendBtn);
-  container.append(panel);
-}
-
-function renderLastRound(container, state) {
-  const summary = state.lastSummary;
-  const files = Array.isArray(state.lastChangedFiles) ? state.lastChangedFiles : [];
-  if (!summary && !files.length) return;
-
-  const panel = createElement('section', { className: 'last-round-panel' });
-  const header = createElement('div', { className: 'section-header' });
-  header.append(
-    createElement('h2', { text: 'Last Round' }),
-    createElement('span', { text: `round ${state.round}` }),
-  );
-  panel.append(header);
-
-  if (summary) {
-    panel.append(createElement('p', { className: 'last-round-summary', text: summary }));
-  }
-
-  if (files.length) {
-    const fileList = createElement('ul', { className: 'changed-files-list' });
-    files.forEach((f) => fileList.append(createElement('li', { className: 'changed-file', text: f })));
-    panel.append(fileList);
-  }
-
-  container.append(panel);
-}
-
 function renderDashboardPage(container) {
+  const viewModel = deriveViewModel(currentState, currentReviews);
   const columns = createElement('div', { className: 'dashboard-columns' });
-  const leftCol = createElement('div', { className: 'dashboard-col' });
-  const rightCol = createElement('div', { className: 'dashboard-col' });
+  const primary = createElement('div', { className: 'dashboard-col' });
+  const secondary = createElement('div', { className: 'dashboard-col' });
 
-  renderHeader(container, currentState);
+  renderHeader(container, viewModel);
+  renderStatusSummary(container, currentState, viewModel);
 
-  renderKickPanel(leftCol, currentState);
-  renderFeedbackPanel(leftCol, currentState);
-  renderChecklist(leftCol, currentState);
+  renderKickPanel(primary, currentState);
+  renderFeedbackPanel(primary, currentState);
+  renderChecklist(primary, currentState);
 
-  renderCurrentTask(rightCol, currentState);
-  renderProgress(rightCol, currentState);
-  renderMetrics(rightCol, currentState);
-  renderLastRound(rightCol, currentState);
+  renderProgress(secondary, viewModel);
+  renderResultSummary(secondary, viewModel);
+  renderReviewDetails(secondary, currentReviews);
 
-  columns.append(leftCol, rightCol);
+  columns.append(primary, secondary);
   container.append(columns);
   renderError(container);
 }
@@ -577,11 +915,8 @@ function render() {
 
   renderNav(shell);
 
-  if (currentPage === 'history') {
-    renderHistoryPage(shell);
-  } else {
-    renderDashboardPage(shell);
-  }
+  if (currentPage === 'history') renderHistoryPage(shell);
+  else renderDashboardPage(shell);
 
   fragment.append(shell);
   app.replaceChildren(fragment);
@@ -589,19 +924,14 @@ function render() {
 
 async function fetchJson(url) {
   const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`${url} ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`${url} ${response.status}`);
   return response.json();
 }
 
 async function postJson(url, body = {}) {
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
@@ -624,9 +954,7 @@ async function kickAgent() {
     `goal: ${goal}`,
     stack ? `stack: ${stack}` : null,
     rules ? `rules: ${rules}` : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ].filter(Boolean).join('\n');
 
   pendingAction = 'kick';
   controlError = null;
@@ -635,7 +963,7 @@ async function kickAgent() {
   try {
     await postJson('/api/kick', {
       task,
-      checklist: kickForm.checklist.filter(s => s.trim()),
+      checklist: kickForm.checklist.filter((item) => item.trim()),
     });
     kickForm = {
       goal: '',
@@ -645,7 +973,7 @@ async function kickAgent() {
     };
     await refreshDashboard();
   } catch (error) {
-    controlError = error instanceof Error ? error.message : 'Kick 요청에 실패했습니다.';
+    controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
     render();
   } finally {
     pendingAction = null;
@@ -664,7 +992,7 @@ async function stopAgent() {
     await postJson('/api/stop');
     await refreshDashboard();
   } catch (error) {
-    controlError = error instanceof Error ? error.message : 'Stop 요청에 실패했습니다.';
+    controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
     render();
   } finally {
     pendingAction = null;
@@ -685,7 +1013,7 @@ async function sendFeedback() {
     feedbackDraft = '';
     await refreshDashboard();
   } catch (error) {
-    controlError = error instanceof Error ? error.message : '피드백 전송에 실패했습니다.';
+    controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
     render();
   } finally {
     pendingAction = null;
@@ -695,12 +1023,22 @@ async function sendFeedback() {
 
 async function refreshDashboard() {
   try {
-    const promises = [fetchJson('/api/state')];
-    if (currentPage === 'history') promises.push(fetchJson('/api/history'));
+    if (currentPage === 'history') {
+      const [state, history] = await Promise.all([
+        fetchJson('/api/state'),
+        fetchJson('/api/history'),
+      ]);
+      currentState = state;
+      currentHistory = Array.isArray(history) ? history : [];
+    } else {
+      const [state, reviews] = await Promise.all([
+        fetchJson('/api/state'),
+        fetchJson('/api/reviews'),
+      ]);
+      currentState = state;
+      currentReviews = Array.isArray(reviews) ? reviews : [];
+    }
 
-    const [state, history] = await Promise.all(promises);
-    currentState = state;
-    if (history !== undefined) currentHistory = Array.isArray(history) ? history : [];
     loadError = null;
   } catch (error) {
     loadError = error instanceof Error ? error.message : 'unknown error';
@@ -744,21 +1082,18 @@ function injectStyles() {
 
     .main-nav {
       display: flex;
-      gap: 0;
+      width: fit-content;
       border: 1px solid var(--border-soft);
       background: var(--panel-bg);
-      width: fit-content;
     }
 
     .nav-link {
       display: block;
-      padding: 10px 20px;
+      padding: 10px 18px;
       color: var(--text-muted);
       text-decoration: none;
       font-size: 0.82rem;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
       border-right: 1px solid var(--border-soft);
     }
 
@@ -766,124 +1101,21 @@ function injectStyles() {
       border-right: none;
     }
 
-    .nav-link:hover {
-      color: var(--text-base);
-      background: var(--bg-wash);
-    }
-
+    .nav-link:hover,
     .nav-link--active {
       color: var(--accent-strong);
       background: var(--bg-wash);
     }
 
-    .current-task-panel {
-      border: 1px solid var(--border-soft);
-      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
-      box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
-
-    .current-task-panel pre {
-      border-top: 1px solid var(--border-soft);
-      max-height: 160px;
-    }
-
-    .history-panel {
-      border: 1px solid var(--border-soft);
-      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
-      box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
-      padding: 18px;
-    }
-
-    .history-list {
-      display: grid;
-      gap: 12px;
-      margin-top: 14px;
-    }
-
-    .history-session {
-      border: 1px solid var(--border-soft);
-      background: var(--input-bg);
-    }
-
-    .session-summary {
-      min-height: 48px;
-      padding: 12px 14px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      list-style: none;
-    }
-
-    .session-summary::-webkit-details-marker {
-      display: none;
-    }
-
-    .session-time {
-      color: var(--text-strong);
-      font-weight: 700;
-    }
-
-    .session-count {
-      color: var(--accent);
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .session-task {
-      border-top: 1px solid var(--border-soft);
-      padding: 14px;
-      background: var(--bg-wash);
-    }
-
-    .session-task__label {
-      color: var(--accent);
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      margin-bottom: 8px;
-    }
-
-    .session-task__content {
-      margin: 0;
-      border: none;
-      padding: 0;
-      background: transparent;
-      max-height: 120px;
-      color: var(--text-base);
-    }
-
-    .session-reviews {
-      border-top: 1px solid var(--border-soft);
-      padding: 12px;
-      display: grid;
-      gap: 8px;
-    }
-
-    .dashboard-columns {
-      display: grid;
-      grid-template-columns: 380px minmax(0, 1fr);
-      gap: 18px;
-      align-items: start;
-    }
-
-    .dashboard-col {
-      display: grid;
-      gap: 18px;
-    }
-
     .dashboard-header,
+    .summary-panel,
     .kick-panel,
     .progress-panel,
+    .result-panel,
     .feedback-panel,
-    .last-round-panel,
-    .metric,
-    .reviews-panel {
+    .reviews-panel,
+    .checklist-panel,
+    .history-panel {
       border: 1px solid var(--border-soft);
       background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
       box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
@@ -891,8 +1123,8 @@ function injectStyles() {
 
     .dashboard-header {
       display: flex;
-      align-items: center;
       justify-content: space-between;
+      align-items: center;
       gap: 18px;
       padding: 22px;
     }
@@ -904,39 +1136,38 @@ function injectStyles() {
     .prompt,
     .metric__label,
     .section-header span,
-    .review-hint,
-    .form-field__label {
+    .form-field__label,
+    .summary-eyebrow,
+    .task-preview__label,
+    .session-task__label,
+    .review-hint {
       color: var(--accent);
       font-size: 0.78rem;
       text-transform: uppercase;
-      letter-spacing: 0;
     }
 
     h1,
     h2 {
       margin: 0;
       color: var(--text-strong);
-      letter-spacing: 0;
     }
 
     h1 {
       margin-top: 8px;
-      font-size: clamp(1.8rem, 5vw, 3.6rem);
+      font-size: clamp(1.8rem, 5vw, 3.4rem);
       line-height: 1;
     }
 
     h2 {
-      font-size: 1rem;
+      font-size: 1.08rem;
     }
 
     .status-badge {
-      flex: 0 0 auto;
-      min-width: 104px;
+      min-width: 110px;
       border: 1px solid currentColor;
       padding: 10px 14px;
       text-align: center;
       font-weight: 700;
-      text-transform: uppercase;
     }
 
     .status-badge--idle {
@@ -964,29 +1195,117 @@ function injectStyles() {
       background: rgba(196, 168, 130, 0.18);
     }
 
-    .kick-panel {
-      display: grid;
-      gap: 14px;
-      padding: 18px;
-    }
-
+    .summary-panel,
+    .kick-panel,
     .progress-panel,
-    .reviews-panel {
+    .result-panel,
+    .feedback-panel,
+    .reviews-panel,
+    .checklist-panel,
+    .history-panel {
       padding: 18px;
     }
 
-    .progress-header,
+    .summary-panel {
+      display: grid;
+      gap: 18px;
+    }
+
+    .summary-panel__body {
+      display: grid;
+      gap: 8px;
+    }
+
+    .summary-eyebrow,
+    .summary-description,
+    .summary-next-action,
+    .result-summary,
+    .result-decision,
+    .result-next-action,
+    .progress-helper,
+    .form-help,
+    .session-task__summary {
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    .summary-description,
+    .result-summary,
+    .session-task__summary {
+      color: var(--text-strong);
+    }
+
+    .summary-next-action,
+    .result-next-action,
+    .progress-helper,
+    .form-help {
+      color: var(--text-muted);
+    }
+
+    .form-help--notice {
+      color: var(--accent-strong);
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .metric {
+      min-height: 110px;
+      padding: 18px;
+      border: 1px solid var(--border-soft);
+      background: rgba(255, 253, 250, 0.8);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .metric__value {
+      color: var(--text-strong);
+      font-size: 1rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .task-preview {
+      display: grid;
+      gap: 8px;
+    }
+
+    .task-preview__content {
+      max-height: 160px;
+      margin: 0;
+      overflow: auto;
+      border: 1px solid var(--border-soft);
+      padding: 14px;
+      background: var(--pre-bg);
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+    }
+
+    .dashboard-columns {
+      display: grid;
+      grid-template-columns: 380px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .dashboard-col {
+      display: grid;
+      gap: 18px;
+    }
+
     .section-header,
+    .progress-header,
     summary {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-    }
-
-    .progress-header {
-      margin-bottom: 12px;
-      color: var(--text-base);
     }
 
     .kick-form {
@@ -1003,7 +1322,6 @@ function injectStyles() {
     .form-textarea {
       width: 100%;
       border: 1px solid var(--border-strong);
-      border-radius: 0;
       padding: 14px;
       background: var(--input-bg);
       color: var(--text-strong);
@@ -1052,7 +1370,8 @@ function injectStyles() {
       font-weight: 700;
     }
 
-    .control-button--kick {
+    .control-button--kick,
+    .control-button--feedback {
       color: var(--accent-strong);
       background: rgba(196, 168, 130, 0.18);
     }
@@ -1072,7 +1391,8 @@ function injectStyles() {
       background: rgba(141, 120, 104, 0.1);
     }
 
-    .control-error {
+    .control-error,
+    .load-error {
       margin: 0;
       color: var(--error);
       line-height: 1.5;
@@ -1092,35 +1412,32 @@ function injectStyles() {
       transition: width 180ms ease;
     }
 
-    .metrics-grid {
+    .result-panel,
+    .feedback-panel {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 18px;
+      gap: 12px;
     }
 
-    .metric {
-      min-height: 120px;
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 20px;
+    .result-decision {
+      color: var(--accent-strong);
+      font-weight: 700;
     }
 
-    .metric__value {
-      color: var(--text-strong);
-      font-size: 1.05rem;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
+    .feedback-pending-badge {
+      color: #b45309;
+      font-weight: 700;
     }
 
-    .review-list {
+    .review-list,
+    .history-list,
+    .session-reviews {
       display: grid;
       gap: 10px;
       margin-top: 14px;
     }
 
-    .review-item {
+    .review-item,
+    .history-session {
       border: 1px solid var(--border-soft);
       background: var(--input-bg);
     }
@@ -1137,9 +1454,20 @@ function injectStyles() {
       display: none;
     }
 
+    .review-summary-main {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
     .review-name {
       min-width: 0;
       overflow-wrap: anywhere;
+    }
+
+    .review-type {
+      color: var(--text-muted);
+      font-size: 0.85rem;
     }
 
     .review-item[open] .review-hint {
@@ -1159,21 +1487,38 @@ function injectStyles() {
       line-height: 1.55;
     }
 
-    .checklist-panel {
-      border: 1px solid var(--border-soft);
-      background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
-      padding: 18px;
+    .review-tabs {
+      display: flex;
+      border-top: 1px solid var(--border-soft);
+      border-bottom: 1px solid var(--border-soft);
+      background: var(--pre-bg);
+    }
+
+    .review-tab {
+      padding: 8px 14px;
+      border: none;
+      border-right: 1px solid var(--border-soft);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.78rem;
+    }
+
+    .review-tab--active,
+    .review-tab:hover {
+      color: var(--accent-strong);
+      background: var(--input-bg);
     }
 
     .checklist-list {
-      margin: 14px 0 0 0;
+      margin: 0;
       padding-left: 22px;
       display: grid;
       gap: 8px;
     }
 
     .checklist-list-item {
-      color: var(--text-base);
       line-height: 1.55;
     }
 
@@ -1192,123 +1537,126 @@ function injectStyles() {
       flex: 1;
     }
 
-    .checklist-remove-btn {
-      flex: 0 0 auto;
-      width: 36px;
+    .checklist-remove-btn,
+    .checklist-add-btn {
       border: 1px solid var(--border-strong);
       background: transparent;
-      color: var(--error);
+      color: var(--text-base);
       cursor: pointer;
-      font-size: 1rem;
-    }
-
-    .checklist-remove-btn:hover:not(:disabled) {
-      background: rgba(140, 90, 75, 0.1);
-    }
-
-    .checklist-remove-btn:disabled {
-      cursor: not-allowed;
-      color: var(--text-muted);
+      font: inherit;
+      padding: 8px 12px;
     }
 
     .checklist-add-btn {
-      border: 1px dashed var(--border-strong);
-      background: transparent;
+      border-style: dashed;
       color: var(--accent-strong);
-      cursor: pointer;
-      padding: 8px 14px;
-      font: inherit;
       text-align: left;
     }
 
+    .checklist-remove-btn:hover:not(:disabled),
     .checklist-add-btn:hover:not(:disabled) {
       background: rgba(196, 168, 130, 0.16);
     }
 
+    .checklist-remove-btn:disabled,
     .checklist-add-btn:disabled {
       cursor: not-allowed;
       color: var(--text-muted);
     }
 
-    .empty-state,
-    .load-error {
-      margin: 0;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-
-    .load-error {
-      color: var(--error);
-    }
-
-    .feedback-panel,
-    .last-round-panel {
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
-
-    .feedback-pending-badge {
-      color: #b45309;
-      font-weight: 700;
-    }
-
-    .control-button--feedback {
-      color: var(--accent-strong);
-      background: rgba(196, 168, 130, 0.18);
-      border-color: var(--accent-strong);
-      min-width: 80px;
-      align-self: start;
-    }
-
-    .last-round-summary {
-      margin: 0;
-      color: var(--text-base);
-      line-height: 1.6;
-    }
-
-    .changed-files-list {
-      margin: 0;
-      padding-left: 18px;
+    .history-panel {
       display: grid;
       gap: 4px;
     }
 
-    .changed-file {
-      color: var(--accent);
-      font-size: 0.85rem;
-      line-height: 1.5;
+    .session-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .session-summary-main {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .session-summary-text {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
       overflow-wrap: anywhere;
     }
 
-    .review-tabs {
+    .session-summary-meta {
       display: flex;
-      border-bottom: 1px solid var(--border-soft);
-      background: var(--pre-bg);
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
-    .review-tab {
-      padding: 8px 14px;
-      border: none;
-      border-right: 1px solid var(--border-soft);
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-      font: inherit;
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .review-tab:hover {
-      color: var(--text-base);
-      background: rgba(196, 168, 130, 0.1);
-    }
-
-    .review-tab--active {
-      color: var(--accent-strong);
-      background: var(--input-bg);
+    .session-time {
+      color: var(--text-strong);
       font-weight: 700;
+    }
+
+    .session-count {
+      color: var(--accent);
+      font-size: 0.82rem;
+    }
+
+    .inline-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid currentColor;
+      font-size: 0.78rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .inline-badge--running {
+      color: var(--accent-strong);
+      background: rgba(139, 111, 71, 0.12);
+    }
+
+    .inline-badge--complete {
+      color: var(--accent);
+      background: rgba(160, 132, 92, 0.14);
+    }
+
+    .inline-badge--paused {
+      color: var(--accent-soft);
+      background: rgba(196, 168, 130, 0.18);
+    }
+
+    .inline-badge--error {
+      color: var(--error);
+      background: rgba(140, 90, 75, 0.12);
+    }
+
+    .session-task {
+      border-top: 1px solid var(--border-soft);
+      padding: 14px;
+      background: var(--bg-wash);
+      display: grid;
+      gap: 8px;
+    }
+
+    .session-task__content {
+      max-height: 140px;
+      border: none;
+      padding: 0;
+      background: transparent;
+    }
+
+    .empty-state {
+      margin: 0;
+      color: var(--text-muted);
+      line-height: 1.6;
     }
 
     @media (max-width: 860px) {
@@ -1317,7 +1665,8 @@ function injectStyles() {
         padding: 18px 0;
       }
 
-      .dashboard-columns {
+      .dashboard-columns,
+      .metrics-grid {
         grid-template-columns: 1fr;
       }
 
@@ -1330,10 +1679,6 @@ function injectStyles() {
       .control-button,
       .control-actions {
         width: 100%;
-      }
-
-      .metrics-grid {
-        grid-template-columns: 1fr;
       }
     }
   `;
