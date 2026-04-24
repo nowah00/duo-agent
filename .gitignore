@@ -3,6 +3,7 @@ dist/
 reviews/
 watcher/state.json
 watcher/checklist.json
+watcher/feedback.txt
 TASK_DONE.md
 .env
 *.tmp.*

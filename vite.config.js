@@ -9,6 +9,7 @@ const TASK_DONE_PATH = path.join(ROOT_DIR, 'TASK_DONE.md');
 const KICK_TRIGGER_PATH = path.join(ROOT_DIR, 'watcher', '.kick-trigger');
 const REVIEWS_DIR = path.join(ROOT_DIR, 'reviews');
 const CHECKLIST_PATH = path.join(ROOT_DIR, 'watcher', 'checklist.json');
+const FEEDBACK_PATH = path.join(ROOT_DIR, 'watcher', 'feedback.txt');
 
 function sendJson(res, payload, statusCode = 200) {
   res.statusCode = statusCode;
@@ -43,6 +44,15 @@ async function readJsonBody(req) {
   }
 }
 
+async function readPendingFeedback() {
+  try {
+    const text = await fs.readFile(FEEDBACK_PATH, 'utf8');
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function readChecklist() {
   try {
     const raw = await fs.readFile(CHECKLIST_PATH, 'utf8');
@@ -54,7 +64,10 @@ async function readChecklist() {
 }
 
 async function readState() {
-  const checklist = await readChecklist();
+  const [checklist, pendingFeedback] = await Promise.all([
+    readChecklist(),
+    readPendingFeedback(),
+  ]);
 
   try {
     const raw = await fs.readFile(STATE_PATH, 'utf8');
@@ -67,7 +80,10 @@ async function readState() {
       status: state.status || 'idle',
       updatedAt: state.updatedAt ?? null,
       lastReason: state.lastReason ?? null,
+      lastSummary: state.lastSummary ?? null,
+      lastChangedFiles: Array.isArray(state.lastChangedFiles) ? state.lastChangedFiles : [],
       checklist,
+      hasPendingFeedback: Boolean(pendingFeedback),
     };
   } catch {
     return {
@@ -77,7 +93,10 @@ async function readState() {
       status: 'idle',
       updatedAt: null,
       lastReason: null,
+      lastSummary: null,
+      lastChangedFiles: [],
       checklist,
+      hasPendingFeedback: Boolean(pendingFeedback),
     };
   }
 }
@@ -198,6 +217,23 @@ function duoAgentApiPlugin() {
             sendJson(res, result.payload, result.statusCode);
           } catch (error) {
             const message = error instanceof Error ? error.message : 'kick failed';
+            sendJson(res, { ok: false, error: message }, 500);
+          }
+          return;
+        }
+
+        if (req.method === 'POST' && url === '/api/feedback') {
+          try {
+            const body = await readJsonBody(req);
+            const feedback = typeof body.feedback === 'string' ? body.feedback.trim() : '';
+            if (!feedback) {
+              sendJson(res, { ok: false, error: 'feedback is required' }, 400);
+              return;
+            }
+            await fs.writeFile(FEEDBACK_PATH, feedback, 'utf8');
+            sendJson(res, { ok: true });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'feedback failed';
             sendJson(res, { ok: false, error: message }, 500);
           }
           return;

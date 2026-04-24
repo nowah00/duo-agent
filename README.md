@@ -256,6 +256,22 @@ Claude가 `STATUS: COMPLETE`를 출력하지 않으면 루프가 계속됩니다
 
 ## 개발 로그
 
+### 2026-04-24 (기능 추가 — 피드백 채널 및 라운드 요약)
+
+**중간 피드백 채널** (`watcher/prompt.config.js`, `vite.config.js`, `src/main.js`)
+- 대시보드에 "Mid-run Feedback" 패널 추가 — 실행 중 방향 수정 메시지를 에이전트에게 전달 가능
+- `POST /api/feedback` 엔드포인트 추가 → `watcher/feedback.txt`에 저장
+- 다음 라운드 시작 시 프롬프트에 `[사용자 피드백]` 블록으로 자동 포함 후 파일 소거
+- 대기 중인 피드백이 있으면 배지로 표시, 전달 후 자동 초기화
+- `watcher/feedback.txt` gitignore 추가
+
+**라운드 요약 카드** (`watcher/watch.js`, `vite.config.js`, `src/main.js`)
+- 에이전트 실행 후 `git diff --name-only HEAD`로 변경 파일 목록 추출 → `state.lastChangedFiles` 저장
+- JSON 상태 출력의 `summary` → `state.lastSummary` 저장 (이전 구현과 연계)
+- 대시보드에 "Last Round" 패널 추가 — 마지막 라운드 요약 텍스트 + 변경 파일 목록 표시
+
+---
+
 ### 2026-04-24 (리팩토링 — 에이전트 추상화 및 안정화)
 
 **에이전트 추상화** (`watcher/watch.js`, `watcher/prompt.config.js`, `.env.example`)

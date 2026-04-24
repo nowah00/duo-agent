@@ -2,7 +2,7 @@ const chokidar = require('chokidar');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const { buildPrompt: buildProjectPrompt } = require('./prompt.config');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -14,6 +14,7 @@ const CONFIG = {
   donePath: path.join(ROOT_DIR, 'TASK_DONE.md'),
   triggerPath: path.join(__dirname, '.kick-trigger'),
   goalsPath: path.join(__dirname, 'task-goals.json'),
+  feedbackPath: path.join(__dirname, 'feedback.txt'),
   debounceMs: Number(process.env.WATCH_DEBOUNCE_MS || 3000),
   maxRounds: Number(process.env.AGENT_MAX_ROUNDS || 8),
   maxRetries: Number(process.env.AGENT_MAX_RETRIES || 1),
@@ -161,6 +162,15 @@ function saveReview(agentKey, output) {
   log(`결과 저장: ${path.relative(ROOT_DIR, reviewPath)}`);
 }
 
+function getChangedFiles() {
+  try {
+    const out = execSync('git diff --name-only HEAD', { cwd: ROOT_DIR, encoding: 'utf8', timeout: 5000 });
+    return out.trim().split('\n').filter(Boolean).slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
 function lastLines(text, n = 20) {
   return text.split('\n').slice(-n).join('\n');
 }
@@ -291,6 +301,7 @@ function runAgent(role, reason) {
 
     const afterHash = sourceFingerprint();
     const changed = beforeHash !== afterHash;
+    const changedFiles = changed ? getChangedFiles() : [];
     const parsed = getOutputStatus(output);
     const complete = parsed?.status === 'COMPLETE';
     const needsNext = parsed?.status === 'NEEDS_NEXT';
@@ -313,7 +324,7 @@ function runAgent(role, reason) {
       ].filter(l => l !== null).join('\n');
 
       fs.writeFileSync(CONFIG.donePath, doneText);
-      writeState({ ...latestState, status: 'complete', lastSummary: summary, lastReason: 'agent reported complete', retries: 0 });
+      writeState({ ...latestState, status: 'complete', lastSummary: summary, lastChangedFiles: changedFiles, lastReason: 'agent reported complete', retries: 0 });
       log(`완료됨: ${path.relative(ROOT_DIR, CONFIG.donePath)}`);
       return;
     }
@@ -350,7 +361,7 @@ function runAgent(role, reason) {
     }
 
     const followUpReason = queuedReason || `${agent.label} completed; changed=${changed}`;
-    writeState({ ...latestState, lastSummary: summary, retries: 0 });
+    writeState({ ...latestState, lastSummary: summary, lastChangedFiles: changedFiles, retries: 0 });
     setTimeout(() => runAgent(nextRole(role), followUpReason), CONFIG.debounceMs);
   });
 }

@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const GOALS_PATH = path.join(__dirname, 'task-goals.json');
+const FEEDBACK_PATH = path.join(__dirname, 'feedback.txt');
 
 function readGeneratedGoals() {
   if (!fs.existsSync(GOALS_PATH)) return null;
@@ -29,6 +30,18 @@ function readTask() {
     if (task) return `현재 작업 지시: "${task}"`;
   }
   return null;
+}
+
+function readFeedback() {
+  if (!fs.existsSync(FEEDBACK_PATH)) return null;
+  try {
+    const feedback = fs.readFileSync(FEEDBACK_PATH, 'utf8').trim();
+    if (!feedback) return null;
+    fs.writeFileSync(FEEDBACK_PATH, '', 'utf8');
+    return feedback;
+  } catch {
+    return null;
+  }
 }
 
 function readChecklist() {
@@ -90,6 +103,11 @@ function buildPrompt({ role, agentLabel, peerLabel, rootDir, reason, round, maxR
 
   const task = readTask();
   const checklist = readChecklist();
+  const feedback = readFeedback();
+
+  const feedbackBlock = feedback
+    ? ['', '[사용자 피드백 — 이 내용을 우선적으로 반영한다]', feedback].join('\n')
+    : null;
 
   const checklistBlock = checklist
     ? [
@@ -108,6 +126,7 @@ function buildPrompt({ role, agentLabel, peerLabel, rootDir, reason, round, maxR
     `라운드: ${round}/${maxRounds}`,
     task ? '' : null,
     task ?? null,
+    feedbackBlock,
     checklistBlock,
     '',
     '목표:',

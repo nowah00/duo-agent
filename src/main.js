@@ -22,6 +22,9 @@ let currentState = {
   status: 'idle',
   updatedAt: null,
   lastReason: null,
+  lastSummary: null,
+  lastChangedFiles: [],
+  hasPendingFeedback: false,
 };
 let currentReviews = [];
 let loadError = null;
@@ -33,6 +36,7 @@ let kickForm = {
   rules: '',
   checklist: [],
 };
+let feedbackDraft = '';
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -376,13 +380,72 @@ function renderError(container) {
   }));
 }
 
+function renderFeedbackPanel(container, state) {
+  const panel = createElement('section', { className: 'feedback-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const statusText = state.hasPendingFeedback ? '대기 중 — 다음 라운드에 전달됩니다' : '전송 가능';
+
+  header.append(
+    createElement('h2', { text: 'Mid-run Feedback' }),
+    createElement('span', { className: state.hasPendingFeedback ? 'feedback-pending-badge' : '', text: statusText }),
+  );
+
+  const textarea = createElement('textarea', { className: 'form-textarea' });
+  textarea.placeholder = '실행 중 방향을 바꾸고 싶을 때 입력하세요. 다음 라운드 시작 시 에이전트에게 전달됩니다.';
+  textarea.value = feedbackDraft;
+  textarea.rows = 3;
+  textarea.addEventListener('input', (e) => {
+    feedbackDraft = e.target.value;
+    sendBtn.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
+  });
+
+  const sendBtn = createElement('button', {
+    className: 'control-button control-button--feedback',
+    text: pendingAction === 'feedback' ? '전송 중...' : '↑ 전달',
+  });
+  sendBtn.type = 'button';
+  sendBtn.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
+  sendBtn.addEventListener('click', () => sendFeedback());
+
+  panel.append(header, textarea, sendBtn);
+  container.append(panel);
+}
+
+function renderLastRound(container, state) {
+  const summary = state.lastSummary;
+  const files = Array.isArray(state.lastChangedFiles) ? state.lastChangedFiles : [];
+  if (!summary && !files.length) return;
+
+  const panel = createElement('section', { className: 'last-round-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  header.append(
+    createElement('h2', { text: 'Last Round' }),
+    createElement('span', { text: `round ${state.round}` }),
+  );
+  panel.append(header);
+
+  if (summary) {
+    panel.append(createElement('p', { className: 'last-round-summary', text: summary }));
+  }
+
+  if (files.length) {
+    const fileList = createElement('ul', { className: 'changed-files-list' });
+    files.forEach((f) => fileList.append(createElement('li', { className: 'changed-file', text: f })));
+    panel.append(fileList);
+  }
+
+  container.append(panel);
+}
+
 function render() {
   const fragment = document.createDocumentFragment();
   const shell = createElement('div', { className: 'dashboard-shell' });
 
   renderHeader(shell, currentState);
   renderKickPanel(shell, currentState);
+  renderFeedbackPanel(shell, currentState);
   renderChecklist(shell, currentState);
+  renderLastRound(shell, currentState);
   renderProgress(shell, currentState);
   renderMetrics(shell, currentState);
   renderReviews(shell, currentReviews);
@@ -470,6 +533,27 @@ async function stopAgent() {
     await refreshDashboard();
   } catch (error) {
     controlError = error instanceof Error ? error.message : 'Stop 요청에 실패했습니다.';
+    render();
+  } finally {
+    pendingAction = null;
+    render();
+  }
+}
+
+async function sendFeedback() {
+  const feedback = feedbackDraft.trim();
+  if (!feedback || pendingAction) return;
+
+  pendingAction = 'feedback';
+  controlError = null;
+  render();
+
+  try {
+    await postJson('/api/feedback', { feedback });
+    feedbackDraft = '';
+    await refreshDashboard();
+  } catch (error) {
+    controlError = error instanceof Error ? error.message : '피드백 전송에 실패했습니다.';
     render();
   } finally {
     pendingAction = null;
@@ -887,6 +971,47 @@ function injectStyles() {
 
     .load-error {
       color: var(--error);
+    }
+
+    .feedback-panel,
+    .last-round-panel {
+      border: 1px solid #203629;
+      background: rgba(5, 10, 8, 0.92);
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .feedback-pending-badge {
+      color: #fbbf24;
+    }
+
+    .control-button--feedback {
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.08);
+      border-color: #38bdf8;
+      min-width: 80px;
+      align-self: start;
+    }
+
+    .last-round-summary {
+      margin: 0;
+      color: #c6f6d5;
+      line-height: 1.6;
+    }
+
+    .changed-files-list {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .changed-file {
+      color: #7dd3a7;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
     }
 
     @media (max-width: 760px) {
