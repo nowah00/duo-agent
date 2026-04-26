@@ -20,6 +20,7 @@ let currentState = {
   lastChangedFiles: [],
   hasPendingFeedback: false,
   currentTask: null,
+  projectName: null,
   checklist: [],
 };
 let currentReviews = [];
@@ -29,12 +30,14 @@ let loadError = null;
 let controlError = null;
 let pendingAction = null;
 let kickForm = {
+  projectName: '',
   goal: '',
   stack: '',
   rules: '',
   checklist: [],
 };
 let feedbackDraft = '';
+let confirmReset = false;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -162,6 +165,7 @@ function getUserFacingErrorMessage(message) {
   if (lower.includes('/api/stop')) return '작업 중단 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
   if (lower.includes('/api/feedback')) return '피드백 전달에 실패했습니다. 잠시 후 다시 시도해 주세요.';
   if (lower.includes('task is required')) return '작업 목표를 먼저 입력해 주세요.';
+  if (lower.includes('project name is required')) return '프로젝트 이름을 먼저 입력해 주세요.';
   if (lower.includes('feedback is required')) return '전달할 피드백 내용을 입력해 주세요.';
   if (lower.includes('spawn') || lower.includes('eperm')) return '실행 환경 권한 문제로 작업을 진행하지 못했습니다.';
   if (lower.includes('exit')) return '에이전트 실행이 비정상 종료되었습니다. 설정과 로그를 확인해 주세요.';
@@ -494,9 +498,13 @@ function renderResultSummary(container, viewModel) {
 
 function renderKickPanel(container, state) {
   const status = getStatus(state);
+  const currentProjectName = String(state.projectName || '').trim();
   const panel = createElement('section', { className: 'kick-panel' });
   const header = createElement('div', { className: 'section-header' });
   const form = createElement('form', { className: 'kick-form' });
+  const projectField = createElement('label', { className: 'form-field' });
+  const projectLabel = createElement('span', { className: 'form-field__label', text: '프로젝트 이름' });
+  const projectInput = createElement('input', { className: 'form-input' });
   const goalField = createElement('label', { className: 'form-field' });
   const goalLabel = createElement('span', { className: 'form-field__label', text: '무엇을 만들거나 수정할지' });
   const goalInput = createElement('textarea', { className: 'form-textarea' });
@@ -525,12 +533,27 @@ function renderKickPanel(container, state) {
   const isRunning = status === 'running';
   const isBusy = Boolean(pendingAction);
   const isFormDisabled = isRunning || isBusy;
-  const hasGoal = kickForm.goal.trim().length > 0;
+  const needsProjectName = !currentProjectName;
+  const canSubmitKick = () => {
+    const hasProjectName = !needsProjectName || kickForm.projectName.trim().length > 0;
+    return kickForm.goal.trim().length > 0 && hasProjectName && !isFormDisabled;
+  };
 
   header.append(
     createElement('h2', { text: '작업 요청' }),
     createElement('span', { text: isRunning ? '현재 작업 진행 중' : '새 작업 입력 가능' }),
   );
+
+  projectInput.type = 'text';
+  projectInput.name = 'projectName';
+  projectInput.placeholder = '예: 퍼즐 게임';
+  projectInput.value = currentProjectName || kickForm.projectName;
+  projectInput.disabled = isFormDisabled || Boolean(currentProjectName);
+  projectInput.addEventListener('input', (event) => {
+    kickForm.projectName = event.target.value;
+    kickButton.disabled = !canSubmitKick();
+  });
+  projectField.append(projectLabel, projectInput);
 
   goalInput.name = 'goal';
   goalInput.rows = 5;
@@ -539,7 +562,7 @@ function renderKickPanel(container, state) {
   goalInput.disabled = isFormDisabled;
   goalInput.addEventListener('input', (event) => {
     kickForm.goal = event.target.value;
-    kickButton.disabled = !kickForm.goal.trim() || isFormDisabled;
+    kickButton.disabled = !canSubmitKick();
   });
   goalField.append(goalLabel, goalInput);
 
@@ -604,7 +627,7 @@ function renderKickPanel(container, state) {
   checklistField.append(checklistLabel, checklistHelp, checklistItems, addItemButton);
 
   kickButton.type = 'submit';
-  kickButton.disabled = !hasGoal || isFormDisabled;
+  kickButton.disabled = !canSubmitKick();
 
   stopButton.type = 'button';
   stopButton.disabled = status !== 'running' || isBusy;
@@ -618,7 +641,7 @@ function renderKickPanel(container, state) {
     event.preventDefault();
     kickAgent();
   });
-  form.append(goalField, stackField, rulesField, checklistField, actions);
+  form.append(projectField, goalField, stackField, rulesField, checklistField, actions);
   panel.append(header, form);
 
   if (isRunning) {
@@ -810,6 +833,120 @@ function renderChecklist(container, state) {
   container.append(section);
 }
 
+function buildResetModal() {
+  const overlay = createElement('div', { className: 'modal-overlay' });
+  const card = createElement('div', { className: 'modal-card' });
+  const title = createElement('h2', { className: 'modal-title', text: '프로젝트 초기화' });
+  const body = createElement('p', {
+    className: 'modal-body',
+    text: 'src/ 생성 파일과 작업 내역이 모두 삭제됩니다. 초기화 후에는 되돌릴 수 없습니다.',
+  });
+  const actions = createElement('div', { className: 'modal-actions' });
+  const cancelButton = createElement('button', {
+    className: 'control-button',
+    text: '취소',
+  });
+  const confirmButton = createElement('button', {
+    className: 'control-button control-button--stop',
+    text: pendingAction === 'reset' ? '초기화 중...' : '초기화 확인',
+  });
+
+  cancelButton.type = 'button';
+  cancelButton.disabled = Boolean(pendingAction);
+  cancelButton.addEventListener('click', () => {
+    confirmReset = false;
+    render();
+  });
+
+  confirmButton.type = 'button';
+  confirmButton.disabled = Boolean(pendingAction);
+  confirmButton.addEventListener('click', resetProject);
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay && !pendingAction) {
+      confirmReset = false;
+      render();
+    }
+  });
+
+  actions.append(cancelButton, confirmButton);
+  card.append(title, body, actions);
+  overlay.append(card);
+  return overlay;
+}
+
+function renderProjectPanel(container, state) {
+  const status = getStatus(state);
+  const isRunning = status === 'running';
+  const isBusy = Boolean(pendingAction);
+  const panel = createElement('section', { className: 'project-panel' });
+  const header = createElement('div', { className: 'section-header' });
+
+  header.append(
+    createElement('h2', { text: '프로젝트 관리' }),
+    createElement('span', { text: 'src/ 파일 관리' }),
+  );
+
+  const downloadButton = createElement('button', {
+    className: 'control-button control-button--kick',
+    text: 'ZIP 다운로드',
+  });
+  downloadButton.type = 'button';
+  downloadButton.disabled = isBusy;
+  downloadButton.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = '/api/download-src';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  const resetButton = createElement('button', {
+    className: 'control-button control-button--stop',
+    text: '초기화',
+  });
+  resetButton.type = 'button';
+  resetButton.disabled = isBusy || isRunning;
+  resetButton.addEventListener('click', () => {
+    confirmReset = true;
+    render();
+  });
+
+  const actions = createElement('div', { className: 'control-actions' });
+  actions.append(downloadButton, resetButton);
+  panel.append(header, actions);
+
+  if (isRunning) {
+    panel.append(createElement('p', {
+      className: 'form-help form-help--notice',
+      text: '작업이 진행 중일 때는 초기화할 수 없습니다.',
+    }));
+  }
+
+  container.append(panel);
+}
+
+async function resetProject() {
+  if (pendingAction) return;
+
+  pendingAction = 'reset';
+  controlError = null;
+  render();
+
+  try {
+    await postJson('/api/reset');
+    confirmReset = false;
+    await refreshDashboard();
+  } catch (error) {
+    controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
+    confirmReset = false;
+    render();
+  } finally {
+    pendingAction = null;
+    render();
+  }
+}
+
 function renderHistoryPage(container) {
   const section = createElement('section', { className: 'history-panel' });
   const header = createElement('div', { className: 'section-header' });
@@ -899,6 +1036,7 @@ function renderDashboardPage(container) {
   renderKickPanel(primary, currentState);
   renderFeedbackPanel(primary, currentState);
   renderChecklist(primary, currentState);
+  renderProjectPanel(primary, currentState);
 
   renderProgress(secondary, viewModel);
   renderResultSummary(secondary, viewModel);
@@ -919,6 +1057,7 @@ function render() {
   else renderDashboardPage(shell);
 
   fragment.append(shell);
+  if (confirmReset) fragment.append(buildResetModal());
   app.replaceChildren(fragment);
 }
 
@@ -944,11 +1083,12 @@ async function postJson(url, body = {}) {
 }
 
 async function kickAgent() {
+  const projectName = kickForm.projectName.trim() || String(currentState.projectName || '').trim();
   const goal = kickForm.goal.trim();
   const stack = kickForm.stack.trim();
   const rules = kickForm.rules.trim();
 
-  if (!goal || pendingAction || getStatus(currentState) === 'running') return;
+  if (!projectName || !goal || pendingAction || getStatus(currentState) === 'running') return;
 
   const task = [
     `goal: ${goal}`,
@@ -962,10 +1102,12 @@ async function kickAgent() {
 
   try {
     await postJson('/api/kick', {
+      projectName,
       task,
       checklist: kickForm.checklist.filter((item) => item.trim()),
     });
     kickForm = {
+      projectName: '',
       goal: '',
       stack: '',
       rules: '',
@@ -1115,7 +1257,8 @@ function injectStyles() {
     .feedback-panel,
     .reviews-panel,
     .checklist-panel,
-    .history-panel {
+    .history-panel,
+    .project-panel {
       border: 1px solid var(--border-soft);
       background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
       box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
@@ -1202,8 +1345,14 @@ function injectStyles() {
     .feedback-panel,
     .reviews-panel,
     .checklist-panel,
-    .history-panel {
+    .history-panel,
+    .project-panel {
       padding: 18px;
+    }
+
+    .project-panel {
+      display: grid;
+      gap: 12px;
     }
 
     .summary-panel {
@@ -1659,6 +1808,43 @@ function injectStyles() {
       line-height: 1.6;
     }
 
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(61, 43, 31, 0.52);
+      display: grid;
+      place-items: center;
+      z-index: 1000;
+    }
+
+    .modal-card {
+      width: min(100% - 40px, 440px);
+      padding: 28px;
+      border: 1px solid var(--border-strong);
+      background: var(--panel-bg);
+      box-shadow: 0 8px 40px rgba(61, 43, 31, 0.28);
+      display: grid;
+      gap: 18px;
+    }
+
+    .modal-title {
+      margin: 0;
+      font-size: 1.1rem;
+      color: var(--text-strong);
+    }
+
+    .modal-body {
+      margin: 0;
+      color: var(--text-base);
+      line-height: 1.65;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
     @media (max-width: 860px) {
       #app {
         width: min(100% - 20px, 1120px);
@@ -1688,6 +1874,13 @@ function injectStyles() {
 window.addEventListener('hashchange', () => {
   currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
   refreshDashboard();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && confirmReset && !pendingAction) {
+    confirmReset = false;
+    render();
+  }
 });
 
 injectStyles();

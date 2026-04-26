@@ -1,8 +1,13 @@
 import { defineConfig } from 'vite';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
+import os from 'node:os';
+import crypto from 'node:crypto';
 
 const ROOT_DIR = process.cwd();
+const SRC_DIR = path.join(ROOT_DIR, 'src');
 const STATE_PATH = path.join(ROOT_DIR, 'watcher', 'state.json');
 const TASK_PATH = path.join(ROOT_DIR, 'watcher', 'task.txt');
 const TASK_DONE_PATH = path.join(ROOT_DIR, 'TASK_DONE.md');
@@ -10,6 +15,7 @@ const KICK_TRIGGER_PATH = path.join(ROOT_DIR, 'watcher', '.kick-trigger');
 const REVIEWS_DIR = path.join(ROOT_DIR, 'reviews');
 const CHECKLIST_PATH = path.join(ROOT_DIR, 'watcher', 'checklist.json');
 const FEEDBACK_PATH = path.join(ROOT_DIR, 'watcher', 'feedback.txt');
+const PROJECT_PATH = path.join(ROOT_DIR, 'watcher', 'project.txt');
 
 function sendJson(res, payload, statusCode = 200) {
   res.statusCode = statusCode;
@@ -72,11 +78,21 @@ async function readCurrentTask() {
   }
 }
 
+async function readProjectName() {
+  try {
+    const text = await fs.readFile(PROJECT_PATH, 'utf8');
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function readState() {
-  const [checklist, pendingFeedback, currentTask] = await Promise.all([
+  const [checklist, pendingFeedback, currentTask, projectName] = await Promise.all([
     readChecklist(),
     readPendingFeedback(),
     readCurrentTask(),
+    readProjectName(),
   ]);
 
   try {
@@ -95,6 +111,7 @@ async function readState() {
       checklist,
       hasPendingFeedback: Boolean(pendingFeedback),
       currentTask,
+      projectName,
     };
   } catch {
     return {
@@ -109,6 +126,7 @@ async function readState() {
       checklist,
       hasPendingFeedback: Boolean(pendingFeedback),
       currentTask,
+      projectName,
     };
   }
 }
@@ -123,6 +141,15 @@ async function kickAgent(req) {
 
   if (!task) {
     return { payload: { ok: false, error: 'task is required' }, statusCode: 400 };
+  }
+
+  const existingProject = await readProjectName();
+  if (!existingProject) {
+    const projectName = typeof body.projectName === 'string' ? body.projectName.trim() : '';
+    if (!projectName) {
+      return { payload: { ok: false, error: 'project name is required' }, statusCode: 400 };
+    }
+    await fs.writeFile(PROJECT_PATH, projectName, 'utf8');
   }
 
   const checklist = Array.isArray(body.checklist)
@@ -236,9 +263,9 @@ async function readHistory() {
 
     return Promise.all(
       taskFiles.map(async (task, index) => {
-        const nextTask = taskFiles[index + 1];
+        const prevTask = index > 0 ? taskFiles[index - 1] : null;
         const sessionOutputs = outputFiles
-          .filter((f) => f.ms >= task.ms && (!nextTask || f.ms < nextTask.ms))
+          .filter((f) => f.ms >= task.ms && (!prevTask || f.ms < prevTask.ms))
           .sort((a, b) => b.ms - a.ms);
 
         const taskContent = await fs.readFile(
@@ -271,9 +298,36 @@ async function readHistory() {
   }
 }
 
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>duo-agent 대시보드</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #faf8f5; font-family: ui-sans-serif, system-ui, sans-serif; }
+      #app { width: min(100% - 40px, 1120px); margin: 0 auto; padding: 28px 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>`;
+
+const RETURN_BUTTON_HTML = `
+<div id="_duo-agent-return" style="position:fixed;bottom:20px;right:20px;z-index:2147483647;font-family:ui-sans-serif,system-ui,sans-serif;">
+  <a href="/_dashboard" style="display:flex;align-items:center;gap:6px;padding:10px 16px;background:#836942;color:#fff;text-decoration:none;font-size:12px;font-weight:700;letter-spacing:0.05em;box-shadow:0 4px 16px rgba(0,0,0,.22);">duo-agent 대시보드 →</a>
+</div>`;
+
 function duoAgentApiPlugin() {
   return {
     name: 'duo-agent-api',
+    transformIndexHtml(html, ctx) {
+      if (ctx.path === '/_dashboard') return html;
+      return html.replace('</body>', `${RETURN_BUTTON_HTML}\n  </body>`);
+    },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0];
@@ -328,6 +382,71 @@ function duoAgentApiPlugin() {
           } catch (error) {
             const message = error instanceof Error ? error.message : 'stop failed';
             sendJson(res, { ok: false, error: message }, 500);
+          }
+          return;
+        }
+
+        if (req.method === 'GET' && url === '/_dashboard') {
+          try {
+            const transformed = await server.transformIndexHtml('/_dashboard', DASHBOARD_HTML);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(transformed);
+          } catch {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(DASHBOARD_HTML);
+          }
+          return;
+        }
+
+        if (req.method === 'GET' && url === '/api/download-src') {
+          const tmpZip = path.join(os.tmpdir(), `duo-agent-${crypto.randomUUID()}.zip`);
+          try {
+            execSync(`zip -r "${tmpZip}" src/ index.html`, { cwd: ROOT_DIR, stdio: 'pipe' });
+            const stat = await fs.stat(tmpZip);
+            const projectName = await readProjectName();
+            const zipFilename = projectName
+              ? `${projectName.replace(/[^a-zA-Z0-9가-힣._-]/g, '_')}.zip`
+              : 'game.zip';
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/zip');
+            res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+            res.setHeader('Content-Length', stat.size);
+            const stream = createReadStream(tmpZip);
+            stream.pipe(res);
+            stream.on('close', () => fs.rm(tmpZip, { force: true }).catch(() => {}));
+          } catch (error) {
+            await fs.rm(tmpZip, { force: true }).catch(() => {});
+            sendJson(res, { ok: false, error: error instanceof Error ? error.message : 'zip failed' }, 500);
+          }
+          return;
+        }
+
+        if (req.method === 'POST' && url === '/api/reset') {
+          try {
+            const srcEntries = await fs.readdir(SRC_DIR, { withFileTypes: true }).catch(() => []);
+            await Promise.all(
+              srcEntries
+                .filter((e) => e.name !== 'main.js')
+                .map((e) => fs.rm(path.join(SRC_DIR, e.name), { recursive: true, force: true })),
+            );
+            try {
+              execSync('git checkout HEAD -- src/main.js index.html', { cwd: ROOT_DIR, stdio: 'pipe' });
+            } catch {}
+            await fs.rm(TASK_DONE_PATH, { force: true });
+            await writeJsonFile(STATE_PATH, { round: 0, lastAgent: null, status: 'idle', retries: 0, lastRole: null });
+            await fs.rm(TASK_PATH, { force: true });
+            await fs.rm(CHECKLIST_PATH, { force: true });
+            await fs.rm(KICK_TRIGGER_PATH, { force: true });
+            await fs.rm(FEEDBACK_PATH, { force: true });
+            await fs.rm(path.join(ROOT_DIR, 'watcher', 'task-goals.json'), { force: true });
+            await fs.rm(PROJECT_PATH, { force: true });
+            await fs.rm(REVIEWS_DIR, { recursive: true, force: true });
+            await fs.mkdir(REVIEWS_DIR, { recursive: true });
+            sendJson(res, { ok: true });
+          } catch (error) {
+            sendJson(res, { ok: false, error: error instanceof Error ? error.message : 'reset failed' }, 500);
           }
           return;
         }
