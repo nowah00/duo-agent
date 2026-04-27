@@ -11,8 +11,18 @@ Codex가 작성한 코드를 검토하고, 문제를 직접 수정한다.
 4. 성능 문제
 5. 코드 구조 / 가독성
 
+## 파일 구조
+
+**템플릿 파일 (수정 금지)**
+- `src/main.js` — 대시보드 UI
+- `index.html` (루트) — Vite 진입점
+
+**산출물 파일 (리뷰·수정 대상)**
+- `src/index.html` — 게임·앱 진입점
+- `src/` 하위 기타 파일
+
 ## 금지 사항
-- `reviews/`, `node_modules/` 수정 금지
+- `src/main.js`, `index.html` (루트), `reviews/`, `node_modules/` 수정 금지
 - 불필요한 주석 추가 금지
 
 ## STATUS 규칙

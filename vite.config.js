@@ -325,7 +325,7 @@ function duoAgentApiPlugin() {
   return {
     name: 'duo-agent-api',
     transformIndexHtml(html, ctx) {
-      if (ctx.path === '/_dashboard') return html;
+      if (ctx.path === '/_dashboard' || ctx.path === '/') return html;
       return html.replace('</body>', `${RETURN_BUTTON_HTML}\n  </body>`);
     },
     configureServer(server) {
@@ -400,10 +400,25 @@ function duoAgentApiPlugin() {
           return;
         }
 
+        if (req.method === 'GET' && url === '/game') {
+          const gamePath = path.join(SRC_DIR, 'index.html');
+          try {
+            const gameHtml = await fs.readFile(gamePath, 'utf8');
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(gameHtml);
+          } catch {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>미리보기</title><style>body{font-family:ui-sans-serif,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#faf8f5;color:#8d7868;}</style></head><body><p>아직 게임이 없습니다. 작업을 먼저 시작해 주세요.</p></body></html>`);
+          }
+          return;
+        }
+
         if (req.method === 'GET' && url === '/api/download-src') {
           const tmpZip = path.join(os.tmpdir(), `duo-agent-${crypto.randomUUID()}.zip`);
           try {
-            execSync(`zip -r "${tmpZip}" src/ index.html`, { cwd: ROOT_DIR, stdio: 'pipe' });
+            execSync(`zip -r "${tmpZip}" src/ -x "src/main.js"`, { cwd: ROOT_DIR, stdio: 'pipe' });
             const stat = await fs.stat(tmpZip);
             const projectName = await readProjectName();
             const zipFilename = projectName

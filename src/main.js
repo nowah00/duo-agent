@@ -7,7 +7,6 @@ const AGENT_LABELS = {
 
 const app = document.querySelector('#app');
 const openReviews = new Set();
-const reviewTabs = new Map();
 
 let currentState = {
   round: 0,
@@ -25,7 +24,7 @@ let currentState = {
 };
 let currentReviews = [];
 let currentHistory = [];
-let currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
+let currentPage = window.location.hash === '#history' ? 'history' : window.location.hash === '#preview' ? 'preview' : 'dashboard';
 let loadError = null;
 let controlError = null;
 let pendingAction = null;
@@ -36,7 +35,6 @@ let kickForm = {
   rules: '',
   checklist: [],
 };
-let feedbackDraft = '';
 let confirmReset = false;
 
 function clamp(value, min, max) {
@@ -363,7 +361,6 @@ function deriveViewModel(state, reviews) {
 
   return {
     status: statusView,
-    taskSummary: summarizeTask(state.currentTask),
     roundLabel: `${round} / ${maxRounds} 라운드`,
     progressPercent: percent,
     updatedAtText: formatDate(state.updatedAt),
@@ -401,9 +398,15 @@ function renderNav(container) {
     text: '작업 기록',
   });
 
+  const previewLink = createElement('a', {
+    className: `nav-link${currentPage === 'preview' ? ' nav-link--active' : ''}`,
+    text: '미리보기',
+  });
+
   dashboardLink.href = '#';
   historyLink.href = '#history';
-  nav.append(dashboardLink, historyLink);
+  previewLink.href = '#preview';
+  nav.append(dashboardLink, historyLink, previewLink);
   container.append(nav);
 }
 
@@ -437,7 +440,6 @@ function renderStatusSummary(container, state, viewModel) {
   meta.append(
     createMetric('현재 담당', viewModel.agentText),
     createMetric('마지막 업데이트', viewModel.updatedAtText),
-    createMetric('현재 작업 요약', viewModel.taskSummary),
   );
 
   panel.append(body, meta);
@@ -489,8 +491,6 @@ function renderResultSummary(container, viewModel) {
   panel.append(
     header,
     createElement('p', { className: 'result-summary', text: result.summary }),
-    createElement('p', { className: 'result-decision', text: result.decisionText }),
-    createElement('p', { className: 'result-next-action', text: result.nextAction }),
   );
 
   container.append(panel);
@@ -665,47 +665,6 @@ function renderKickPanel(container, state) {
   container.append(panel);
 }
 
-function renderFeedbackPanel(container, state) {
-  const panel = createElement('section', { className: 'feedback-panel' });
-  const header = createElement('div', { className: 'section-header' });
-  const textarea = createElement('textarea', { className: 'form-textarea' });
-  const sendButton = createElement('button', {
-    className: 'control-button control-button--feedback',
-    text: pendingAction === 'feedback' ? '전달 중...' : '피드백 전달',
-  });
-
-  header.append(
-    createElement('h2', { text: '진행 중 피드백' }),
-    createElement('span', {
-      className: state.hasPendingFeedback ? 'feedback-pending-badge' : '',
-      text: state.hasPendingFeedback ? '다음 라운드에 반영 예정' : '즉시 입력 가능',
-    }),
-  );
-
-  textarea.placeholder = '예: 로그인 흐름은 유지하고, 빈 상태 화면 문구만 더 친절하게 바꿔 주세요';
-  textarea.rows = 3;
-  textarea.value = feedbackDraft;
-  textarea.addEventListener('input', (event) => {
-    feedbackDraft = event.target.value;
-    sendButton.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
-  });
-
-  sendButton.type = 'button';
-  sendButton.disabled = !feedbackDraft.trim() || Boolean(pendingAction);
-  sendButton.addEventListener('click', () => sendFeedback());
-
-  panel.append(
-    header,
-    createElement('p', {
-      className: 'form-help',
-      text: '자동 진행 중 방향 수정이 필요하면 다음 라운드에 반영할 내용을 남길 수 있습니다.',
-    }),
-    textarea,
-    sendButton,
-  );
-
-  container.append(panel);
-}
 
 function buildReviewItem(review) {
   const meta = parseReviewMeta(review.name, review.content);
@@ -728,47 +687,7 @@ function buildReviewItem(review) {
   summaryEl.append(summaryLeft, hint);
   details.append(summaryEl);
 
-  if (review.promptSummary) {
-    const activeTab = reviewTabs.get(review.name) || 'output';
-    const tabBar = createElement('div', { className: 'review-tabs' });
-    const outputTab = createElement('button', {
-      className: `review-tab${activeTab === 'output' ? ' review-tab--active' : ''}`,
-      text: '출력',
-    });
-    const promptTab = createElement('button', {
-      className: `review-tab${activeTab === 'prompt' ? ' review-tab--active' : ''}`,
-      text: '프롬프트',
-    });
-    const outputContent = createElement('pre', { text: review.content || '(empty)' });
-    const promptContent = createElement('pre', { text: review.promptSummary });
-
-    outputTab.type = 'button';
-    promptTab.type = 'button';
-
-    if (activeTab !== 'output') outputContent.style.display = 'none';
-    if (activeTab !== 'prompt') promptContent.style.display = 'none';
-
-    outputTab.addEventListener('click', () => {
-      reviewTabs.set(review.name, 'output');
-      outputContent.style.display = '';
-      promptContent.style.display = 'none';
-      outputTab.classList.add('review-tab--active');
-      promptTab.classList.remove('review-tab--active');
-    });
-
-    promptTab.addEventListener('click', () => {
-      reviewTabs.set(review.name, 'prompt');
-      outputContent.style.display = 'none';
-      promptContent.style.display = '';
-      outputTab.classList.remove('review-tab--active');
-      promptTab.classList.add('review-tab--active');
-    });
-
-    tabBar.append(outputTab, promptTab);
-    details.append(tabBar, outputContent, promptContent);
-  } else {
-    details.append(createElement('pre', { text: review.content || '(empty)' }));
-  }
+  details.append(createElement('pre', { text: review.content || '(empty)' }));
 
   return details;
 }
@@ -936,6 +855,9 @@ async function resetProject() {
   try {
     await postJson('/api/reset');
     confirmReset = false;
+    kickForm = { projectName: '', goal: '', stack: '', rules: '', checklist: [] };
+    controlError = null;
+    openReviews.clear();
     await refreshDashboard();
   } catch (error) {
     controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
@@ -1015,6 +937,59 @@ function renderHistoryPage(container) {
   container.append(section);
 }
 
+function renderPreviewPage(container) {
+  const section = createElement('section', { className: 'preview-panel' });
+  const header = createElement('div', { className: 'section-header' });
+  const projectName = currentState.projectName || '미리보기';
+
+  header.append(
+    createElement('h2', { text: projectName }),
+    createElement('span', { text: currentState.projectName ? '실행 중' : '결과물 없음' }),
+  );
+
+  const actions = createElement('div', { className: 'preview-actions' });
+  const openLink = createElement('a', {
+    className: 'control-button control-button--kick',
+    text: '새 탭에서 열기 ↗',
+  });
+  openLink.href = '/game';
+  openLink.target = '_blank';
+  openLink.rel = 'noopener';
+
+  const downloadButton = createElement('button', {
+    className: 'control-button',
+    text: 'ZIP 다운로드',
+  });
+  downloadButton.type = 'button';
+  downloadButton.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = '/api/download-src';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  const fullscreenButton = createElement('button', {
+    className: 'control-button',
+    text: '전체 화면',
+  });
+  fullscreenButton.type = 'button';
+  fullscreenButton.addEventListener('click', () => {
+    if (frame.requestFullscreen) frame.requestFullscreen();
+    else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
+  });
+
+  actions.append(openLink, downloadButton, fullscreenButton);
+
+  const frame = document.createElement('iframe');
+  frame.className = 'preview-frame';
+  frame.src = '/game';
+  frame.title = projectName;
+
+  section.append(header, actions, frame);
+  container.append(section);
+}
+
 function renderError(container) {
   if (!loadError) return;
 
@@ -1034,7 +1009,6 @@ function renderDashboardPage(container) {
   renderStatusSummary(container, currentState, viewModel);
 
   renderKickPanel(primary, currentState);
-  renderFeedbackPanel(primary, currentState);
   renderChecklist(primary, currentState);
   renderProjectPanel(primary, currentState);
 
@@ -1054,6 +1028,7 @@ function render() {
   renderNav(shell);
 
   if (currentPage === 'history') renderHistoryPage(shell);
+  else if (currentPage === 'preview') renderPreviewPage(shell);
   else renderDashboardPage(shell);
 
   fragment.append(shell);
@@ -1142,26 +1117,6 @@ async function stopAgent() {
   }
 }
 
-async function sendFeedback() {
-  const feedback = feedbackDraft.trim();
-  if (!feedback || pendingAction) return;
-
-  pendingAction = 'feedback';
-  controlError = null;
-  render();
-
-  try {
-    await postJson('/api/feedback', { feedback });
-    feedbackDraft = '';
-    await refreshDashboard();
-  } catch (error) {
-    controlError = getUserFacingErrorMessage(error instanceof Error ? error.message : '');
-    render();
-  } finally {
-    pendingAction = null;
-    render();
-  }
-}
 
 async function refreshDashboard() {
   try {
@@ -1188,7 +1143,7 @@ async function refreshDashboard() {
 
   const active = document.activeElement;
   const isTyping = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT');
-  if (!isTyping) render();
+  if (!isTyping && currentPage !== 'preview') render();
 }
 
 function injectStyles() {
@@ -1254,11 +1209,11 @@ function injectStyles() {
     .kick-panel,
     .progress-panel,
     .result-panel,
-    .feedback-panel,
     .reviews-panel,
     .checklist-panel,
     .history-panel,
-    .project-panel {
+    .project-panel,
+    .preview-panel {
       border: 1px solid var(--border-soft);
       background: linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-alt) 100%);
       box-shadow: 0 0 0 1px rgba(160, 132, 92, 0.06), 0 18px 40px rgba(96, 71, 45, 0.1);
@@ -1342,11 +1297,11 @@ function injectStyles() {
     .kick-panel,
     .progress-panel,
     .result-panel,
-    .feedback-panel,
     .reviews-panel,
     .checklist-panel,
     .history-panel,
-    .project-panel {
+    .project-panel,
+    .preview-panel {
       padding: 18px;
     }
 
@@ -1369,8 +1324,6 @@ function injectStyles() {
     .summary-description,
     .summary-next-action,
     .result-summary,
-    .result-decision,
-    .result-next-action,
     .progress-helper,
     .form-help,
     .session-task__summary {
@@ -1385,7 +1338,6 @@ function injectStyles() {
     }
 
     .summary-next-action,
-    .result-next-action,
     .progress-helper,
     .form-help {
       color: var(--text-muted);
@@ -1397,7 +1349,7 @@ function injectStyles() {
 
     .metrics-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px;
     }
 
@@ -1519,8 +1471,7 @@ function injectStyles() {
       font-weight: 700;
     }
 
-    .control-button--kick,
-    .control-button--feedback {
+    .control-button--kick {
       color: var(--accent-strong);
       background: rgba(196, 168, 130, 0.18);
     }
@@ -1561,20 +1512,9 @@ function injectStyles() {
       transition: width 180ms ease;
     }
 
-    .result-panel,
-    .feedback-panel {
+    .result-panel {
       display: grid;
       gap: 12px;
-    }
-
-    .result-decision {
-      color: var(--accent-strong);
-      font-weight: 700;
-    }
-
-    .feedback-pending-badge {
-      color: #b45309;
-      font-weight: 700;
     }
 
     .review-list,
@@ -1636,30 +1576,6 @@ function injectStyles() {
       line-height: 1.55;
     }
 
-    .review-tabs {
-      display: flex;
-      border-top: 1px solid var(--border-soft);
-      border-bottom: 1px solid var(--border-soft);
-      background: var(--pre-bg);
-    }
-
-    .review-tab {
-      padding: 8px 14px;
-      border: none;
-      border-right: 1px solid var(--border-soft);
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-      font: inherit;
-      font-size: 0.78rem;
-    }
-
-    .review-tab--active,
-    .review-tab:hover {
-      color: var(--accent-strong);
-      background: var(--input-bg);
-    }
-
     .checklist-list {
       margin: 0;
       padding-left: 22px;
@@ -1716,6 +1632,31 @@ function injectStyles() {
     .history-panel {
       display: grid;
       gap: 4px;
+    }
+
+    .preview-panel {
+      display: grid;
+      gap: 14px;
+    }
+
+    .preview-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .preview-actions .control-button {
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .preview-frame {
+      width: 100%;
+      min-height: 600px;
+      border: 1px solid var(--border-soft);
+      background: #fff;
     }
 
     .session-summary {
@@ -1872,7 +1813,7 @@ function injectStyles() {
 }
 
 window.addEventListener('hashchange', () => {
-  currentPage = window.location.hash === '#history' ? 'history' : 'dashboard';
+  currentPage = window.location.hash === '#history' ? 'history' : window.location.hash === '#preview' ? 'preview' : 'dashboard';
   refreshDashboard();
 });
 
